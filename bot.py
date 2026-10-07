@@ -1,14 +1,12 @@
 import os
 import sqlite3
-import asyncio
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo
+from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
-from aiohttp import web
 
 load_dotenv()
 
@@ -17,8 +15,7 @@ ADMIN_IDS = {
     int(x) for x in os.getenv("ADMIN_IDS", "").split(",")
     if x.strip().isdigit()
 }
-DB_PATH = os.getenv("DB_PATH", "bonus_up.db")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
+DB_PATH = os.getenv("DB_PATH", "/data/bonus_up.db" if os.path.isdir("/data") else "bonus_up.db")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -28,7 +25,9 @@ admin_state = {}
 
 
 def db():
-    return sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH)
+    con.execute("PRAGMA foreign_keys = ON")
+    return con
 
 
 def init_db():
@@ -112,13 +111,11 @@ def is_admin(user_id: int) -> bool:
 
 def main_keyboard():
     kb = ReplyKeyboardBuilder()
-    if WEBAPP_URL:
-        kb.button(text="🎁 ОТКРЫТЬ BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
-        kb.adjust(1)
-    else:
-        kb.button(text="⚽ БУКМЕКЕРЫ")
-        kb.button(text="🎰 КАЗИНО")
-        kb.adjust(2)
+    kb.button(text="⚽ БУКМЕКЕРЫ")
+    kb.button(text="🎰 КАЗИНО")
+    kb.button(text="🔥 ТОП БОНУСЫ")
+    kb.button(text="⭐ ЛУЧШИЕ")
+    kb.adjust(2, 2)
     return kb.as_markup(resize_keyboard=True)
 
 
@@ -197,7 +194,7 @@ async def admin(message: Message):
 @dp.message(Command("bonus"))
 async def bonus(message: Message):
     await message.answer(
-        "🎁 BONUS UP\n\nОткройте витрину с актуальными предложениями:",
+        "🔥 ТОП БОНУСЫ\n\nВыберите категорию:",
         reply_markup=main_keyboard()
     )
 
@@ -216,6 +213,30 @@ async def casino(message: Message):
         "🎰 ОНЛАЙН-КАЗИНО\n\nВыберите предложение:",
         reply_markup=offers_keyboard("casino")
     )
+
+
+@dp.message(F.text.in_({"🔥 ТОП БОНУСЫ", "⭐ ЛУЧШИЕ"}))
+async def top(message: Message):
+    with closing(db()) as con:
+        rows = con.execute("""
+        SELECT id,name,bonus FROM offers
+        WHERE enabled=1
+        ORDER BY position,id
+        LIMIT 5
+        """).fetchall()
+    if not rows:
+        await message.answer("Пока нет активных предложений.", reply_markup=main_keyboard())
+        return
+    kb = InlineKeyboardBuilder()
+    text = "🔥 ТОП БОНУСЫ\n\n"
+    for oid, name, bonus in rows:
+        text += f"• {name}"
+        if bonus:
+            text += f" — {bonus}"
+        text += "\n"
+        kb.button(text=f"🎁 {name}", callback_data=f"offer:{oid}")
+    kb.adjust(1)
+    await message.answer(text, reply_markup=kb.as_markup())
 
 
 @dp.callback_query(F.data == "home")
@@ -682,32 +703,10 @@ async def admin_text(message: Message):
             return
 
 
-MINI_APP_HTML = '<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BONUS UP</title><script src="https://telegram.org/js/telegram-web-app.js"></script><style>:root{--bg:#0b0d10;--card:#171a1f;--muted:#a8adb7;--text:#fff;--accent:#f4c84b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,sans-serif}.wrap{max-width:760px;margin:auto;padding:18px 14px 90px}.header{display:flex;align-items:center;justify-content:space-between;margin:4px 0 18px}.logo{font-size:26px;font-weight:800}.sub{color:var(--muted);font-size:13px;margin-top:3px}.tabs{display:flex;gap:8px;background:#111419;padding:6px;border-radius:18px;position:sticky;top:8px;z-index:5}.tab{flex:1;border:0;background:transparent;color:#ddd;padding:13px 8px;border-radius:14px;font-size:16px;font-weight:700}.tab.active{background:var(--accent);color:#111}.banner{margin:18px 0;border-radius:22px;padding:24px 20px;background:linear-gradient(135deg,#282015,#14171c);border:1px solid #403728}.banner h1{margin:0 0 8px;font-size:25px}.banner p{margin:0;color:#c7cad0;line-height:1.4}.section{font-size:22px;font-weight:800;margin:24px 4px 12px}.card{background:var(--card);border:1px solid #252a31;border-radius:22px;margin:12px 0;overflow:hidden}.cardtop{display:flex;gap:12px;padding:16px;align-items:center}.icon{width:62px;height:62px;border-radius:16px;background:#090b0e;display:flex;align-items:center;justify-content:center;font-size:29px;flex:none}.name{font-size:20px;font-weight:800}.bonus{display:inline-block;margin-top:7px;padding:5px 9px;border-radius:8px;background:#9bdb6a;color:#10150f;font-weight:800;font-size:13px}.geo{color:var(--muted);font-size:12px;margin-top:6px}.cardbottom{border-top:1px solid #2a2e35;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}.promo{color:#ddd}.copy{border:0;background:none;color:#aaa;font-size:14px}.go{display:block;margin:0 16px 16px;background:var(--accent);color:#111;text-decoration:none;text-align:center;padding:14px;border-radius:14px;font-weight:900}.empty{color:var(--muted);text-align:center;padding:35px 10px}.note{color:#777;font-size:11px;line-height:1.4;text-align:center;margin-top:20px}</style></head><body><div class="wrap"><div class="header"><div><div class="logo">🎁 BONUS UP</div><div class="sub">Бонусы и лучшие предложения</div></div><div>18+</div></div><div class="tabs"><button class="tab active" data-cat="casino">🎰 ИГРЫ</button><button class="tab" data-cat="bets">⚽ СПОРТ</button></div><div class="banner"><h1>🔥 Лучшие бонусы в одном месте</h1><p>Выбирай предложение, смотри бонус и переходи к оператору.</p></div><div class="section" id="sectionTitle">🎰 Игры</div><div id="offers"><div class="empty">Загрузка предложений…</div></div><div class="note">18+. Только для совершеннолетних. Условия, доступность и правила зависят от страны и оператора.</div></div><script>const tg=window.Telegram&&window.Telegram.WebApp;if(tg){tg.ready();tg.expand()}let all=[];function esc(s){return String(s??\'\').replace(/[&<>"\']/g,m=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#039;\'}[m]))}function render(cat){const box=document.getElementById(\'offers\');const items=all.filter(x=>x.category===cat);document.getElementById(\'sectionTitle\').textContent=cat===\'bets\'?\'⚽ Спорт\':\'🎰 Игры\';if(!items.length){box.innerHTML=\'<div class="empty">Пока нет активных предложений.</div>\';return}box.innerHTML=items.map(x=>`<article class="card"><div class="cardtop"><div class="icon">${cat===\'bets\'?\'⚽\':\'🎰\'}</div><div><div class="name">${esc(x.name)}</div>${x.bonus?`<span class="bonus">${esc(x.bonus)}</span>`:\'\'}${x.geo?`<div class="geo">GEO: ${esc(x.geo)}</div>`:\'\'}</div></div><div class="cardbottom"><div class="promo">${x.promo?`ПРОМО <b>${esc(x.promo)}</b>`:\'Партнёрское предложение\'}</div>${x.promo?`<button class="copy" onclick="copyPromo(\'${esc(x.promo)}\')">▣ Скопировать</button>`:\'\'}</div><a class="go" href="${esc(x.url)}" target="_blank" rel="noopener">🎁 ПОЛУЧИТЬ БОНУС</a></article>`).join(\'\')}async function load(){try{const r=await fetch(\'/api/offers\');all=await r.json();render(\'casino\')}catch(e){document.getElementById(\'offers\').innerHTML=\'<div class="empty">Не удалось загрузить предложения.</div>\'}}function copyPromo(v){navigator.clipboard?.writeText(v);if(tg)tg.showPopup({title:\'Промокод\',message:\'Промокод скопирован\',buttons:[{type:\'ok\'}]})}document.querySelectorAll(\'.tab\').forEach(b=>b.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));b.classList.add(\'active\');render(b.dataset.cat)});load();</script></body></html>'
-
-async def mini_app(request):
-    return web.Response(text=MINI_APP_HTML, content_type="text/html")
-
-async def api_offers(request):
-    with closing(db()) as con:
-        rows = con.execute("SELECT id,category,name,description,bonus,url,geo FROM offers WHERE enabled=1 ORDER BY category,position,id").fetchall()
-    return web.json_response([{"id":r[0],"category":r[1],"name":r[2],"description":r[3],"bonus":r[4],"url":r[5],"geo":r[6],"promo":""} for r in rows])
-
-async def health(request):
-    return web.Response(text="ok")
-
 async def main():
     init_db()
     seed_demo()
     bot = Bot(TOKEN)
-    app = web.Application()
-    app.router.add_get("/app", mini_app)
-    app.router.add_get("/api/offers", api_offers)
-    app.router.add_get("/health", health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", "8080"))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
     await dp.start_polling(bot)
 
 
