@@ -63,34 +63,29 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
-        # Migration for an existing database created by the first version.
+        # Additive migrations preserve existing partner links and offers.
         cols = [r[1] for r in con.execute("PRAGMA table_info(offers)").fetchall()]
-        if "geo" not in cols:
-            con.execute("ALTER TABLE offers ADD COLUMN geo TEXT DEFAULT ''")
+        for col, definition in [("geo", "TEXT DEFAULT ''"), ("promo_code", "TEXT DEFAULT ''"), ("logo_url", "TEXT DEFAULT ''")]:
+            if col not in cols:
+                con.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS banners (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL DEFAULT '',
+            image_url TEXT DEFAULT '',
+            button_text TEXT DEFAULT 'СМОТРЕТЬ',
+            url TEXT NOT NULL DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            position INTEGER DEFAULT 0
+        )
+        """)
         con.commit()
 
 
 def seed_demo():
-    with closing(db()) as con:
-        if con.execute("SELECT COUNT(*) FROM offers").fetchone()[0] == 0:
-            demo = [
-                ("bets", "1xBet", "Партнёрский оффер — ссылка добавляется позже.",
-                 "", "https://example.com/1xbet", 1, 1, "CIS"),
-                ("bets", "MelBet", "Партнёрский оффер — ссылка добавляется позже.",
-                 "", "https://example.com/melbet", 1, 2, "CIS"),
-                ("bets", "Mellstroy", "Партнёрский оффер — ссылка добавляется позже.",
-                 "", "https://example.com/mellstroy", 1, 3, "CIS"),
-                ("casino", "PIN-UP Casino", "Партнёрский оффер — ссылка добавляется позже.",
-                 "", "https://example.com/pinup", 1, 1, "CIS"),
-                ("casino", "Crypto Casino", "Тестовая карточка. Заменить после проверки партнёрки.",
-                 "", "https://example.com/crypto", 1, 2, "GLOBAL"),
-            ]
-            con.executemany("""
-                INSERT INTO offers
-                (category,name,description,bonus,url,enabled,position,geo)
-                VALUES(?,?,?,?,?,?,?,?)
-            """, demo)
-            con.commit()
+    # Never seed fake example.com offers into production.
+    return
 
 
 def add_user(message: Message, source=""):
@@ -112,12 +107,12 @@ def is_admin(user_id: int) -> bool:
 
 def main_keyboard():
     kb = ReplyKeyboardBuilder()
+    kb.button(text="⚽ БУКМЕКЕРЫ")
+    kb.button(text="🎰 КАЗИНО")
     if WEBAPP_URL:
-        kb.button(text="🎁 ОТКРЫТЬ BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
-        kb.adjust(1)
+        kb.button(text="🎰 ЕЩЁ БОЛЬШЕ БОНУСОВ 🎰", web_app=WebAppInfo(url=WEBAPP_URL))
+        kb.adjust(2, 1)
     else:
-        kb.button(text="⚽ БУКМЕКЕРЫ")
-        kb.button(text="🎰 КАЗИНО")
         kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
@@ -682,15 +677,68 @@ async def admin_text(message: Message):
             return
 
 
-MINI_APP_HTML = '<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BONUS UP</title><script src="https://telegram.org/js/telegram-web-app.js"></script><style>:root{--bg:#0b0d10;--card:#171a1f;--muted:#a8adb7;--text:#fff;--accent:#f4c84b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,sans-serif}.wrap{max-width:760px;margin:auto;padding:18px 14px 90px}.header{display:flex;align-items:center;justify-content:space-between;margin:4px 0 18px}.logo{font-size:26px;font-weight:800}.sub{color:var(--muted);font-size:13px;margin-top:3px}.tabs{display:flex;gap:8px;background:#111419;padding:6px;border-radius:18px;position:sticky;top:8px;z-index:5}.tab{flex:1;border:0;background:transparent;color:#ddd;padding:13px 8px;border-radius:14px;font-size:16px;font-weight:700}.tab.active{background:var(--accent);color:#111}.banner{margin:18px 0;border-radius:22px;padding:24px 20px;background:linear-gradient(135deg,#282015,#14171c);border:1px solid #403728}.banner h1{margin:0 0 8px;font-size:25px}.banner p{margin:0;color:#c7cad0;line-height:1.4}.section{font-size:22px;font-weight:800;margin:24px 4px 12px}.card{background:var(--card);border:1px solid #252a31;border-radius:22px;margin:12px 0;overflow:hidden}.cardtop{display:flex;gap:12px;padding:16px;align-items:center}.icon{width:62px;height:62px;border-radius:16px;background:#090b0e;display:flex;align-items:center;justify-content:center;font-size:29px;flex:none}.name{font-size:20px;font-weight:800}.bonus{display:inline-block;margin-top:7px;padding:5px 9px;border-radius:8px;background:#9bdb6a;color:#10150f;font-weight:800;font-size:13px}.geo{color:var(--muted);font-size:12px;margin-top:6px}.cardbottom{border-top:1px solid #2a2e35;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}.promo{color:#ddd}.copy{border:0;background:none;color:#aaa;font-size:14px}.go{display:block;margin:0 16px 16px;background:var(--accent);color:#111;text-decoration:none;text-align:center;padding:14px;border-radius:14px;font-weight:900}.empty{color:var(--muted);text-align:center;padding:35px 10px}.note{color:#777;font-size:11px;line-height:1.4;text-align:center;margin-top:20px}</style></head><body><div class="wrap"><div class="header"><div><div class="logo">🎁 BONUS UP</div><div class="sub">Бонусы и лучшие предложения</div></div><div>18+</div></div><div class="tabs"><button class="tab active" data-cat="casino">🎰 ИГРЫ</button><button class="tab" data-cat="bets">⚽ СПОРТ</button></div><div class="banner"><h1>🔥 Лучшие бонусы в одном месте</h1><p>Выбирай предложение, смотри бонус и переходи к оператору.</p></div><div class="section" id="sectionTitle">🎰 Игры</div><div id="offers"><div class="empty">Загрузка предложений…</div></div><div class="note">18+. Только для совершеннолетних. Условия, доступность и правила зависят от страны и оператора.</div></div><script>const tg=window.Telegram&&window.Telegram.WebApp;if(tg){tg.ready();tg.expand()}let all=[];function esc(s){return String(s??\'\').replace(/[&<>"\']/g,m=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#039;\'}[m]))}function render(cat){const box=document.getElementById(\'offers\');const items=all.filter(x=>x.category===cat);document.getElementById(\'sectionTitle\').textContent=cat===\'bets\'?\'⚽ Спорт\':\'🎰 Игры\';if(!items.length){box.innerHTML=\'<div class="empty">Пока нет активных предложений.</div>\';return}box.innerHTML=items.map(x=>`<article class="card"><div class="cardtop"><div class="icon">${cat===\'bets\'?\'⚽\':\'🎰\'}</div><div><div class="name">${esc(x.name)}</div>${x.bonus?`<span class="bonus">${esc(x.bonus)}</span>`:\'\'}${x.geo?`<div class="geo">GEO: ${esc(x.geo)}</div>`:\'\'}</div></div><div class="cardbottom"><div class="promo">${x.promo?`ПРОМО <b>${esc(x.promo)}</b>`:\'Партнёрское предложение\'}</div>${x.promo?`<button class="copy" onclick="copyPromo(\'${esc(x.promo)}\')">▣ Скопировать</button>`:\'\'}</div><a class="go" href="${esc(x.url)}" target="_blank" rel="noopener">🎁 ПОЛУЧИТЬ БОНУС</a></article>`).join(\'\')}async function load(){try{const r=await fetch(\'/api/offers\');all=await r.json();render(\'casino\')}catch(e){document.getElementById(\'offers\').innerHTML=\'<div class="empty">Не удалось загрузить предложения.</div>\'}}function copyPromo(v){navigator.clipboard?.writeText(v);if(tg)tg.showPopup({title:\'Промокод\',message:\'Промокод скопирован\',buttons:[{type:\'ok\'}]})}document.querySelectorAll(\'.tab\').forEach(b=>b.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));b.classList.add(\'active\');render(b.dataset.cat)});load();</script></body></html>'
+MINI_APP_HTML = '<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BONUS UP</title><script src="https://telegram.org/js/telegram-web-app.js"></script><style>
+:root{--bg:#090909;--card:#171613;--muted:#aaa397;--text:#fff9ec;--gold:#f4c542;--gold2:#ffe58a;--line:#3a301a}
+*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:radial-gradient(ellipse at 50% -10%,#38280b 0,transparent 45%),var(--bg);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:auto;padding:calc(18px + env(safe-area-inset-top)) 15px calc(105px + env(safe-area-inset-bottom))}
+.header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:3px 0 22px}.logo{font-size:25px;font-weight:950;letter-spacing:1px}.logo:after{content:" UP";color:var(--gold)}.sub{color:var(--muted);font-size:11px;margin-top:5px;letter-spacing:1px}.tabs{display:flex;gap:8px;background:#12110f;padding:6px;border:1px solid #2b2518;border-radius:17px;position:sticky;top:7px;z-index:5;box-shadow:0 6px 20px #0007}.tab{flex:1;border:0;background:transparent;color:#c8c1b4;padding:13px 8px;border-radius:12px;font-size:13px;font-weight:900;letter-spacing:.4px}.tab.active{background:linear-gradient(115deg,#ffe58a,#d7a21c);color:#181100;box-shadow:0 4px 14px #dca71925}
+.banner{position:relative;overflow:hidden;margin:18px 0 22px;border-radius:23px;padding:25px 21px;background:linear-gradient(120deg,#3a2a0c,#211909 54%,#121212);border:1px solid #5b4518;box-shadow:inset 0 1px #ffffff10,0 12px 30px #0008}.banner:after{content:"🎁";position:absolute;right:-5px;bottom:-26px;font-size:110px;opacity:.14;transform:rotate(-12deg);pointer-events:none}.banner h1{margin:0 0 10px;font-size:27px;line-height:1.08;letter-spacing:-.6px;font-weight:950;max-width:86%}.banner p{margin:0;color:#d2c6a8;line-height:1.5;font-size:13px;max-width:85%}
+.section{font-size:22px;font-weight:950;letter-spacing:-.4px;margin:24px 4px 13px}.card{position:relative;background:linear-gradient(135deg,#1c1b17,#121212 75%);border:1px solid #30291a;border-radius:21px;margin:12px 0;overflow:hidden;box-shadow:0 8px 20px #0003}.card:before{content:"";position:absolute;left:0;top:17px;bottom:17px;width:3px;background:linear-gradient(var(--gold2),#a9750b);border-radius:0 3px 3px 0}
+.cardtop{display:flex;gap:13px;padding:17px 15px;align-items:center}.icon{width:60px;height:60px;border-radius:17px;background:linear-gradient(145deg,#35270c,#17130a);border:1px solid #55421b;display:flex;align-items:center;justify-content:center;font-size:27px;flex:none}.name{font-size:18px;font-weight:900;letter-spacing:-.2px}.bonus{display:inline-block;margin-top:8px;padding:6px 9px;border-radius:8px;background:linear-gradient(110deg,#ffe58a,#e1ad28);color:#181100;font-weight:950;font-size:12px}.geo{display:inline-block;color:#e1c66e;background:#292213;border:1px solid #51411c;border-radius:7px;font-size:10px;padding:4px 7px;margin-top:7px}
+.cardbottom{border-top:1px solid #2c271c;padding:12px 15px;display:flex;justify-content:space-between;align-items:center;gap:8px}.promo{color:#f4e6bd;font-size:12px}.copy{border:1px solid #59471d;background:#241d0d;color:var(--gold2);border-radius:9px;padding:8px 10px;font-size:11px;font-weight:850}.go{display:block;margin:0 14px 14px;background:linear-gradient(110deg,#ffe58a,#dba51b);color:#191200;text-decoration:none;text-align:center;padding:14px;border-radius:13px;font-weight:950;font-size:13px;letter-spacing:.3px;box-shadow:0 5px 15px #d7a21d20}.empty{color:var(--muted);text-align:center;padding:35px 12px;border:1px dashed #3c3321;border-radius:18px;font-size:13px}.note{color:#898378;font-size:10px;line-height:1.55;text-align:center;margin-top:28px;padding:22px 4px 8px;border-top:1px solid #2c271c}.note:before{content:"BONUS UP";display:block;color:var(--gold2);font-size:17px;font-weight:950;letter-spacing:1px;margin-bottom:9px}.note:after{content:"18+";display:block;color:#ff7777;border:2px solid #e74b4b;border-radius:7px;width:38px;padding:4px 0;margin:12px auto;font-size:14px;font-weight:950}
+@media(min-width:560px){.wrap{padding-left:22px;padding-right:22px}.banner{padding:31px 28px}.banner h1{font-size:34px}.cardtop{padding:20px}.icon{width:66px;height:66px}}
+</style></head><body><div class="wrap"><div class="header"><div><div class="logo">🎁 BONUS UP</div><div class="sub">Бонусы и лучшие предложения</div></div><div>18+</div></div><div class="tabs"><button class="tab active" data-cat="casino">🎰 ИГРЫ</button><button class="tab" data-cat="bets">⚽ СПОРТ</button></div><div class="banner"><h1>🔥 Лучшие бонусы в одном месте</h1><p>Выбирай предложение, смотри бонус и переходи к оператору.</p></div><div class="section" id="sectionTitle">🎰 Игры</div><div id="offers"><div class="empty">Загрузка предложений…</div></div><div class="note">18+. Только для совершеннолетних. Условия, доступность и правила зависят от страны и оператора.</div></div><script>const tg=window.Telegram&&window.Telegram.WebApp;if(tg){tg.ready();tg.expand()}let all=[];function esc(s){return String(s??\'\').replace(/[&<>"\']/g,m=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#039;\'}[m]))}function render(cat){const box=document.getElementById(\'offers\');const items=all.filter(x=>x.category===cat);document.getElementById(\'sectionTitle\').textContent=cat===\'bets\'?\'⚽ Спорт\':\'🎰 Игры\';if(!items.length){box.innerHTML=\'<div class="empty">Пока нет активных предложений.</div>\';return}box.innerHTML=items.map(x=>`<article class="card"><div class="cardtop"><div class="icon">${cat===\'bets\'?\'⚽\':\'🎰\'}</div><div><div class="name">${esc(x.name)}</div>${x.bonus?`<span class="bonus">${esc(x.bonus)}</span>`:\'\'}${x.geo?`<div class="geo">GEO: ${esc(x.geo)}</div>`:\'\'}</div></div><div class="cardbottom"><div class="promo">${x.promo?`ПРОМО <b>${esc(x.promo)}</b>`:\'Партнёрское предложение\'}</div>${x.promo?`<button class="copy" onclick="copyPromo(\'${esc(x.promo)}\')">▣ Скопировать</button>`:\'\'}</div><a class="go" href="${esc(x.url)}" target="_blank" rel="noopener">🎁 ПОЛУЧИТЬ БОНУС</a></article>`).join(\'\')}async function load(){try{const r=await fetch(\'/api/offers\');all=await r.json();render(\'casino\')}catch(e){document.getElementById(\'offers\').innerHTML=\'<div class="empty">Не удалось загрузить предложения.</div>\'}}function copyPromo(v){navigator.clipboard?.writeText(v);if(tg)tg.showPopup({title:\'Промокод\',message:\'Промокод скопирован\',buttons:[{type:\'ok\'}]})}document.querySelectorAll(\'.tab\').forEach(b=>b.onclick=()=>{document.querySelectorAll(\'.tab\').forEach(x=>x.classList.remove(\'active\'));b.classList.add(\'active\');render(b.dataset.cat)});load();</script></body></html>'
 
 async def mini_app(request):
     return web.Response(text=MINI_APP_HTML, content_type="text/html")
 
 async def api_offers(request):
     with closing(db()) as con:
-        rows = con.execute("SELECT id,category,name,description,bonus,url,geo FROM offers WHERE enabled=1 ORDER BY category,position,id").fetchall()
-    return web.json_response([{"id":r[0],"category":r[1],"name":r[2],"description":r[3],"bonus":r[4],"url":r[5],"geo":r[6],"promo":""} for r in rows])
+        rows = con.execute("""
+            SELECT id,category,name,description,bonus,url,geo,promo_code,logo_url
+            FROM offers WHERE enabled=1 ORDER BY category,position,id
+        """).fetchall()
+    return web.json_response([
+        {"id":r[0],"category":r[1],"name":r[2],"description":r[3],"bonus":r[4],
+         "url":r[5],"geo":r[6],"promo":r[7] or "", "logo_url":r[8] or ""}
+        for r in rows
+    ])
+
+async def api_banners(request):
+    with closing(db()) as con:
+        rows = con.execute("SELECT id,title,text,image_url,button_text,url FROM banners WHERE enabled=1 ORDER BY position,id").fetchall()
+    return web.json_response([{"id":r[0],"title":r[1],"text":r[2],"image_url":r[3],"button_text":r[4],"url":r[5]} for r in rows])
+
+async def go_offer(request):
+    try:
+        offer_id = int(request.match_info["offer_id"])
+    except (TypeError, ValueError):
+        raise web.HTTPNotFound()
+    with closing(db()) as con:
+        row = con.execute("SELECT url FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
+        if row:
+            con.execute("INSERT INTO clicks(user_id,offer_id) VALUES(NULL,?)", (offer_id,))
+            con.commit()
+    if not row or not row[0].startswith(("https://", "http://")):
+        raise web.HTTPNotFound()
+    raise web.HTTPFound(row[0])
+
+async def go_banner(request):
+    try:
+        banner_id = int(request.match_info["banner_id"])
+    except (TypeError, ValueError):
+        raise web.HTTPNotFound()
+    with closing(db()) as con:
+        row = con.execute("SELECT url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
+    if not row or not row[0].startswith(("https://", "http://")):
+        raise web.HTTPNotFound()
+    raise web.HTTPFound(row[0])
+
+async def terms_page(request):
+    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Переход по партнёрским ссылкам может приносить проекту вознаграждение. Только 18+.</p></body></html>", content_type="text/html")
+
+async def privacy_page(request):
+    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Политика конфиденциальности</h1><p>Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.</p><p>После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.</p><p>Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram.</p></body></html>", content_type="text/html")
 
 async def health(request):
     return web.Response(text="ok")
@@ -702,6 +750,11 @@ async def main():
     app = web.Application()
     app.router.add_get("/app", mini_app)
     app.router.add_get("/api/offers", api_offers)
+    app.router.add_get("/api/banners", api_banners)
+    app.router.add_get("/go/{offer_id}", go_offer)
+    app.router.add_get("/go/banner/{banner_id}", go_banner)
+    app.router.add_get("/terms", terms_page)
+    app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)
     runner = web.AppRunner(app)
     await runner.setup()
