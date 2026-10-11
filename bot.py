@@ -139,6 +139,9 @@ def admin_keyboard():
     kb.button(text="✏️ Изменить оффер", callback_data="adm:edit")
     kb.button(text="🔗 Изменить ссылку", callback_data="adm:link")
     kb.button(text="🟢/🔴 Вкл. / выкл.", callback_data="adm:toggle")
+    kb.button(text="🏷 Промокод / логотип", callback_data="adm:promo")
+    kb.button(text="🖼 Баннеры Mini App", callback_data="adm:banners")
+    kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
     kb.adjust(1)
     return kb.as_markup()
@@ -356,6 +359,7 @@ async def adm_view(call: CallbackQuery):
     kb.button(text="✏️ Изменить", callback_data=f"adm:editone:{oid}")
     kb.button(text="🔗 Ссылка", callback_data=f"adm:linkone:{oid}")
     kb.button(text="🟢/🔴 Вкл./выкл.", callback_data=f"adm:toggleone:{oid}")
+    kb.button(text="🏷 Промокод / логотип", callback_data=f"adm:promoon:{oid}")
     kb.button(text="📊 Клики", callback_data=f"adm:clickone:{oid}")
     kb.button(text="⬅️ К списку", callback_data="adm:list")
     kb.adjust(1)
@@ -497,6 +501,69 @@ async def adm_clickone(call: CallbackQuery):
         await call.answer("Оффер не найден", show_alert=True)
 
 
+@dp.callback_query(F.data == "adm:promo")
+async def adm_promo(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await call.message.edit_text("🏷 Выбери оффер, чтобы изменить промокод и логотип:", reply_markup=admin_offer_keyboard("adm:promoon"))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:promoon:"))
+async def adm_promoon(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    admin_state[call.from_user.id] = {"action":"promo","step":"promo_code","offer_id":oid,"data":{}}
+    await call.message.edit_text("🏷 Отправь промокод. Если убрать промокод — напиши -.")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:banners")
+async def adm_banners(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        rows = con.execute("SELECT id,title,enabled,position FROM banners ORDER BY position,id").fetchall()
+    kb = InlineKeyboardBuilder()
+    lines = ["🖼 БАННЕРЫ MINI APP", ""]
+    if not rows:
+        lines.append("Баннеров пока нет.")
+    for bid,title,enabled,pos in rows:
+        lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {title or 'Без заголовка'} | позиция {pos}")
+        kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{bid}", callback_data=f"adm:bannertoggle:{bid}")
+    kb.button(text="⬅️ В админ-панель", callback_data="adm:home")
+    kb.adjust(1)
+    await call.message.edit_text("\\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:bannertoggle:"))
+async def adm_bannertoggle(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    bid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        con.execute("UPDATE banners SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (bid,))
+        con.commit()
+    await call.answer("Статус баннера обновлён")
+    await adm_banners(call)
+
+
+@dp.callback_query(F.data == "adm:banneradd")
+async def adm_banneradd(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    admin_state[call.from_user.id] = {"action":"banner","step":"title","data":{}}
+    await call.message.edit_text("➕ НОВЫЙ БАННЕР\n\n1/6. Заголовок баннера:")
+    await call.answer()
+
+
 @dp.message()
 async def admin_text(message: Message):
     uid = message.from_user.id
@@ -512,6 +579,79 @@ async def admin_text(message: Message):
         admin_state.pop(uid, None)
         await message.answer("❌ Отменено.", reply_markup=admin_keyboard())
         return
+
+    if action == "promo":
+        if step == "promo_code":
+            state["data"]["promo_code"] = "" if text == "-" else text
+            state["step"] = "logo_url"
+            await message.answer("Отправь HTTPS-ссылку на логотип. Если не нужен — напиши -.")
+            return
+        if step == "logo_url":
+            logo = "" if text == "-" else text
+            if logo and not logo.startswith(("https://", "http://")):
+                await message.answer("Нужна ссылка на изображение http:// или https://, либо -")
+                return
+            with closing(db()) as con:
+                con.execute("UPDATE offers SET promo_code=?,logo_url=? WHERE id=?",
+                            (state["data"]["promo_code"], logo, state["offer_id"]))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Промокод и логотип сохранены.", reply_markup=admin_keyboard())
+            return
+
+    if action == "banner":
+        fields = [
+            ("title", "2/6. Текст под заголовком:"),
+            ("text", "3/6. HTTPS-ссылка на изображение или -:"),
+            ("image_url", "4/6. Текст кнопки:"),
+            ("button_text", "5/6. Ссылка перехода баннера (https://...):"),
+            ("url", "6/6. Позиция баннера (число, например 1):"),
+        ]
+        if step == "title":
+            state["data"]["title"] = text
+            state["step"] = "text"
+            await message.answer(fields[0][1])
+            return
+        if step == "text":
+            state["data"]["text"] = text
+            state["step"] = "image_url"
+            await message.answer(fields[1][1])
+            return
+        if step == "image_url":
+            if text != "-" and not text.startswith(("https://", "http://")):
+                await message.answer("Нужна ссылка http:// или https://, либо -")
+                return
+            state["data"]["image_url"] = "" if text == "-" else text
+            state["step"] = "button_text"
+            await message.answer(fields[2][1])
+            return
+        if step == "button_text":
+            state["data"]["button_text"] = text
+            state["step"] = "url"
+            await message.answer(fields[3][1])
+            return
+        if step == "url":
+            if not text.startswith(("https://", "http://")):
+                await message.answer("Нужна партнёрская ссылка http:// или https://")
+                return
+            state["data"]["url"] = text
+            state["step"] = "position"
+            await message.answer(fields[4][1])
+            return
+        if step == "position":
+            try:
+                pos = int(text)
+            except ValueError:
+                await message.answer("Позиция должна быть числом.")
+                return
+            d = state["data"]
+            with closing(db()) as con:
+                con.execute("INSERT INTO banners(title,text,image_url,button_text,url,enabled,position) VALUES(?,?,?,?,?,1,?)",
+                            (d["title"],d["text"],d["image_url"],d["button_text"],d["url"],pos))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Баннер добавлен и включён.", reply_markup=admin_keyboard())
+            return
 
     if action == "link":
         if step == "url":
