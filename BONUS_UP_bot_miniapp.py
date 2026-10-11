@@ -77,9 +77,13 @@ def init_db():
             button_text TEXT DEFAULT 'СМОТРЕТЬ',
             url TEXT NOT NULL DEFAULT '',
             enabled INTEGER DEFAULT 1,
-            position INTEGER DEFAULT 0
+            position INTEGER DEFAULT 0,
+            clicks INTEGER DEFAULT 0
         )
         """)
+        banner_cols = [r[1] for r in con.execute("PRAGMA table_info(banners)").fetchall()]
+        if "clicks" not in banner_cols:
+            con.execute("ALTER TABLE banners ADD COLUMN clicks INTEGER DEFAULT 0")
         con.commit()
 
 
@@ -527,13 +531,13 @@ async def adm_banners(call: CallbackQuery):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     with closing(db()) as con:
-        rows = con.execute("SELECT id,title,enabled,position FROM banners ORDER BY position,id").fetchall()
+        rows = con.execute("SELECT id,title,enabled,position,clicks FROM banners ORDER BY position,id").fetchall()
     kb = InlineKeyboardBuilder()
     lines = ["🖼 БАННЕРЫ MINI APP", ""]
     if not rows:
         lines.append("Баннеров пока нет.")
-    for bid,title,enabled,pos in rows:
-        lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {title or 'Без заголовка'} | позиция {pos}")
+    for bid,title,enabled,pos,clicks in rows:
+        lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {title or 'Без заголовка'} | позиция {pos} | переходы {clicks}")
         kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{bid}", callback_data=f"adm:bannertoggle:{bid}")
     kb.button(text="⬅️ В админ-панель", callback_data="adm:home")
     kb.adjust(1)
@@ -870,6 +874,9 @@ async def go_banner(request):
         raise web.HTTPNotFound()
     with closing(db()) as con:
         row = con.execute("SELECT url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
+        if row:
+            con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
+            con.commit()
     if not row or not row[0].startswith(("https://", "http://")):
         raise web.HTTPNotFound()
     raise web.HTTPFound(row[0])
