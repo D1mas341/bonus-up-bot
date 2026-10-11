@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import asyncio
+from urllib.parse import urlparse
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
@@ -250,12 +251,10 @@ async def offer(call: CallbackQuery):
         await call.answer("Предложение больше недоступно.", show_alert=True)
         return
 
-    category, name, desc, bonus, url, geo = row
+    category, name, desc, bonus, url, _geo = row
     text = f"🎁 {name}\n\n"
     if bonus:
         text += f"💰 {bonus}\n"
-    if geo:
-        text += f"🌍 GEO: {geo}\n"
     if desc:
         text += f"{desc}\n"
     text += "\n18+. Условия и доступность зависят от страны и правил оператора."
@@ -856,21 +855,21 @@ let all=[];let currentCat="casino";let selectedId=null;
 function esc(s){return String(s??"").replace(/[&<>"\']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",\'"\':"&quot;","\'":"&#039;"}[m]))}
 function logoHtml(x,cls){return x.logo_url?\'<img src="\'+esc(x.logo_url)+\'" alt="" loading="lazy" onerror="this.style.display=&quot;none&quot;">\':(x.category==="bets"?"⚽":"🎰")}
 function bonusBadges(value){if(!value)return "";let parts=String(value).split(/\s*(?:\||\+|,|;)\s*/).filter(Boolean);if(parts.length===1){let match=String(value).match(/(\d+\s*FS|FS\s*\d+|\d+\s*%|Up to\s*[\d$€£]+)/ig);if(match&&match.length>1)parts=match}return parts.map((p,i)=>\'<span class="bonus \'+(/up to/i.test(p)?"alt":"")+\'">\'+esc(p.trim())+\'</span>\').join("")}
+function hasPartnerLink(x){try{const u=new URL(String(x.url||""));const h=u.hostname.toLowerCase();return (u.protocol==="https:"||u.protocol==="http:")&&!["example.com","www.example.com","example.org","www.example.org","example.net","www.example.net"].includes(h)&&!h.endsWith(".example.com")&&!h.endsWith(".example.org")&&!h.endsWith(".example.net")}catch(e){return false}}
 function render(cat){currentCat=cat;const box=document.getElementById("offers");const items=all.filter(x=>x.category===cat);document.getElementById("sectionTitle").textContent=cat==="bets"?"⚽ Спорт":"🎰 Игры";if(!items.length){box.innerHTML=\'<div class="empty">Пока нет активных предложений.</div>\';return}
-box.innerHTML=items.map(x=>\'<article class="card" data-open="\'+Number(x.id)+\'"><div class="cardtop"><div class="icon">\'+logoHtml(x,"icon")+\'</div><div class="cardmain"><div class="name">\'+esc(x.name)+\'</div><div class="badges">\'+bonusBadges(x.bonus)+\'</div></div><a class="arrow" href="/go/\'+Number(x.id)+\'" aria-label="Перейти к \'+esc(x.name)+\'" target="_blank" rel="noopener">↗</a></div><div class="cardbottom"><div class="promo">\'+(x.promo?\'ПРОМО <b>\'+esc(x.promo)+\'</b>\':\'Партнёрское предложение\')+\'</div>\'+(x.promo?\'<button class="copy" data-copy="\'+Number(x.id)+\'">▣ Copy</button>\':\'\')+\'</div></article>\').join("");
-box.querySelectorAll(".card").forEach(card=>card.addEventListener("click",e=>{if(e.target.closest(".arrow")||e.target.closest(".copy"))return;openModal(Number(card.dataset.open))}));
+box.innerHTML=items.map(x=>\'<article class="card" data-open="\'+Number(x.id)+\'" role="button" tabindex="0" aria-label="Подробнее: \'+esc(x.name)+\'"><div class="cardtop"><div class="icon">\'+logoHtml(x,"icon")+\'</div><div class="cardmain"><div class="name">\'+esc(x.name)+\'</div><div class="badges">\'+bonusBadges(x.bonus)+\'</div></div>\'+(hasPartnerLink(x)?\'<a class="arrow" href="/go/\'+Number(x.id)+\'" aria-label="Перейти к \'+esc(x.name)+\'" target="_blank" rel="noopener">↗</a>\':\'<span class="arrow disabled" aria-label="Партнёрская ссылка ещё не подключена">↗</span>\')+\'</div><div class="cardbottom"><div class="promo">\'+(x.promo?\'ПРОМО <b>\'+esc(x.promo)+\'</b>\':\'Партнёрское предложение\')+\'</div>\'+(x.promo?\'<button class="copy" data-copy="\'+Number(x.id)+\'">▣ Copy</button>\':\'\')+\'</div></article>\').join("");
+box.querySelectorAll(".card").forEach(card=>{card.addEventListener("click",e=>{if(e.target.closest(".arrow")||e.target.closest(".copy"))return;openModal(Number(card.dataset.open))});card.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target===card){e.preventDefault();openModal(Number(card.dataset.open))}})});
 box.querySelectorAll("[data-copy]").forEach(btn=>btn.addEventListener("click",e=>{e.stopPropagation();const item=all.find(x=>x.id===Number(btn.dataset.copy));if(item)copyPromo(item.promo)}))
 }
 function openModal(id){const x=all.find(item=>item.id===id);if(!x)return;selectedId=id;const other=all.filter(item=>item.category===x.category&&item.id!==id);const modal=document.getElementById("modalContent");
 modal.innerHTML=\'<div class="modalhead"><div class="modal-logo">\'+logoHtml(x,"modal-logo")+\'</div><div style="min-width:0;flex:1"><div class="badges">\'+bonusBadges(x.bonus)+\'</div><div class="modal-title" style="margin-top:8px">\'+esc(x.name)+\'</div></div><button class="modal-close" id="closeModal" aria-label="Закрыть">×</button></div>\'+
-\'<div class="modal-section"><div class="muted-label">Об игре</div><div class="description">\'+esc(x.description||"Информация об этом предложении будет добавлена позже.")+\'</div></div>\'+
+\'<div class="modal-section"><div class="muted-label">Об игре</div><div class="description">\'+esc(x.description||"Описание этого предложения скоро появится.")+\'</div></div>\'+
 (x.promo?\'<div class="modal-section"><div class="muted-label">ПРОМОКОД</div><div class="promo-large"><div class="promo-value">\'+esc(x.promo)+\'</div><button class="copy" id="modalCopy">▣ Copy</button></div></div>\':\'\')+
-\'<a class="play" href="/go/\'+Number(x.id)+\'" target="_blank" rel="noopener">ИГРАТЬ ↗</a>\'+
-(other.length?\'<div class="other-title">ДРУГИЕ \'+(x.category==="bets"?"БУКМЕКЕРЫ":"ИГРЫ")+\'</div><div class="other-grid">\'+other.map(o=>\'<button class="mini-game" data-other="\'+Number(o.id)+\'"><span class="mini-logo">\'+logoHtml(o,"mini-logo")+\'</span><span style="min-width:0"><span class="mini-name" style="display:block">\'+esc(o.name)+\'</span><span class="mini-link">Открыть ↗</span></span></button>\').join("")+\'</div>\':\'\');
+(hasPartnerLink(x)?\'<a class="play" href="/go/\'+Number(x.id)+\'" target="_blank" rel="noopener">ИГРАТЬ ↗</a>\':\'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">ПАРТНЁРСКАЯ ССЫЛКА СКОРО ПОЯВИТСЯ</div>\')+
+(other.length?\'<div class="other-title">ДРУГИЕ \'+(x.category==="bets"?"БУКМЕКЕРЫ":"ИГРЫ")+\'</div><div class="other-grid">\'+other.map(o=>hasPartnerLink(o)?\'<a class="mini-game" href="/go/\'+Number(o.id)+\'" target="_blank" rel="noopener"><span class="mini-logo">\'+logoHtml(o,"mini-logo")+\'</span><span style="min-width:0"><span class="mini-name" style="display:block">\'+esc(o.name)+\'</span><span class="mini-link">Открыть ↗</span></span></a>\':\'<div class="mini-game" style="opacity:.55"><span class="mini-logo">\'+logoHtml(o,"mini-logo")+\'</span><span style="min-width:0"><span class="mini-name" style="display:block">\'+esc(o.name)+\'</span><span class="mini-link">Ссылка скоро появится</span></span></div>\').join("")+\'</div>\':\'\');
 document.getElementById("modalBackdrop").classList.add("open");document.body.style.overflow="hidden";
 document.getElementById("closeModal").onclick=closeModal;
 const cp=document.getElementById("modalCopy");if(cp)cp.onclick=()=>copyPromo(x.promo);
-modal.querySelectorAll("[data-other]").forEach(btn=>btn.onclick=()=>openModal(Number(btn.dataset.other)));
 }
 function closeModal(){document.getElementById("modalBackdrop").classList.remove("open");document.body.style.overflow="";selectedId=null}
 document.getElementById("modalBackdrop").addEventListener("click",e=>{if(e.target.id==="modalBackdrop")closeModal()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
@@ -886,12 +885,12 @@ async def mini_app(request):
 async def api_offers(request):
     with closing(db()) as con:
         rows = con.execute("""
-            SELECT id,category,name,description,bonus,url,geo,promo_code,logo_url
+            SELECT id,category,name,description,bonus,url,promo_code,logo_url
             FROM offers WHERE enabled=1 ORDER BY category,position,id
         """).fetchall()
     return web.json_response([
         {"id":r[0],"category":r[1],"name":r[2],"description":r[3],"bonus":r[4],
-         "url":r[5],"geo":r[6],"promo":r[7] or "", "logo_url":r[8] or ""}
+         "url":r[5],"promo":r[6] or "", "logo_url":r[7] or ""}
         for r in rows
     ])
 
@@ -900,6 +899,19 @@ async def api_banners(request):
         rows = con.execute("SELECT id,title,text,image_url,button_text,url FROM banners WHERE enabled=1 ORDER BY position,id").fetchall()
     return web.json_response([{"id":r[0],"title":r[1],"text":r[2],"image_url":r[3],"button_text":r[4],"url":r[5]} for r in rows])
 
+def is_partner_url(value):
+    try:
+        parsed = urlparse((value or "").strip())
+        host = (parsed.hostname or "").lower()
+        return (parsed.scheme in {"https", "http"} and bool(host)
+                and host not in {"example.com", "www.example.com", "example.org", "www.example.org", "example.net", "www.example.net"}
+                and not host.endswith(".example.com")
+                and not host.endswith(".example.org")
+                and not host.endswith(".example.net"))
+    except (TypeError, ValueError):
+        return False
+
+
 async def go_offer(request):
     try:
         offer_id = int(request.match_info["offer_id"])
@@ -907,11 +919,11 @@ async def go_offer(request):
         raise web.HTTPNotFound()
     with closing(db()) as con:
         row = con.execute("SELECT url FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
-        if row:
+        if row and is_partner_url(row[0]):
             con.execute("INSERT INTO clicks(user_id,offer_id) VALUES(NULL,?)", (offer_id,))
             con.commit()
-    if not row or not row[0].startswith(("https://", "http://")):
-        raise web.HTTPNotFound()
+    if not row or not is_partner_url(row[0]):
+        raise web.HTTPNotFound(text="Партнёрская ссылка ещё не подключена.")
     raise web.HTTPFound(row[0])
 
 async def go_banner(request):
