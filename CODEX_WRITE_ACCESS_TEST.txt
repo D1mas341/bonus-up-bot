@@ -1,2 +1,0 @@
-Temporary test of GitHub write access from ChatGPT Codex Connector.
-This file is not part of the bot and should be removed after the test.
