@@ -26,11 +26,17 @@ jobs:
       - name: Install application dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Install headless DOM test dependency
+        run: npm install --no-save jsdom
+
       - name: Check Python syntax
         run: python -m py_compile bot.py BONUS_UP_bot_miniapp.py tests/test_app_routes.py
 
       - name: Test Mini App and tracking routes with isolated SQLite database
         run: python -m unittest discover -s tests -v
+
+      - name: Test Mini App interactions in headless DOM
+        run: node tests/test_miniapp_ui.cjs
 
       - name: Extract and check Mini App JavaScript syntax
         shell: bash
