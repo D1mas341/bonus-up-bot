@@ -18,6 +18,9 @@ class MiniAppRouteTests(unittest.IsolatedAsyncioTestCase):
         self.client = TestClient(TestServer(self._make_app()))
         await self.client.start_server()
         with bot.db() as con:
+            con.execute("DELETE FROM clicks")
+            con.execute("DELETE FROM offers")
+            con.execute("DELETE FROM banners")
             con.execute(
                 "INSERT INTO offers(category,name,description,bonus,url,enabled,position,geo,promo_code,logo_url) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -63,7 +66,7 @@ class MiniAppRouteTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/api/offers")
         self.assertEqual(response.status, 200)
         offers = await response.json()
-        self.assertEqual([x["name"] for x in offers], ["Test Casino", "Real Partner"])
+        self.assertEqual([x["name"] for x in offers], ["Real Partner", "Test Casino"])
         self.assertTrue(all("geo" not in x for x in offers))
         self.assertTrue(all("url" in x and "promo" in x for x in offers))
 
