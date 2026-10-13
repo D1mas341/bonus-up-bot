@@ -47,6 +47,16 @@ class MiniAppRouteTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
 
     @staticmethod
+    def _id_for_offer(name):
+        with bot.db() as con:
+            return con.execute("SELECT id FROM offers WHERE name=?", (name,)).fetchone()[0]
+
+    @staticmethod
+    def _id_for_banner(title):
+        with bot.db() as con:
+            return con.execute("SELECT id FROM banners WHERE title=?", (title,)).fetchone()[0]
+
+    @staticmethod
     def _make_app():
         app = bot.web.Application()
         app.router.add_get("/app", bot.mini_app)
@@ -71,28 +81,32 @@ class MiniAppRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("url" in x and "promo" in x for x in offers))
 
     async def test_offer_redirect_and_click_count(self):
-        response = await self.client.get("/go/2", allow_redirects=False)
+        offer_id = self._id_for_offer("Real Partner")
+        response = await self.client.get(f"/go/{offer_id}", allow_redirects=False)
         self.assertEqual(response.status, 302)
         self.assertEqual(response.headers["Location"], "https://partner.test")
         with bot.db() as con:
-            self.assertEqual(con.execute("SELECT COUNT(*) FROM clicks WHERE offer_id=2").fetchone()[0], 1)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM clicks WHERE offer_id=?", (offer_id,)).fetchone()[0], 1)
 
     async def test_example_partner_url_is_rejected(self):
-        response = await self.client.get("/go/1", allow_redirects=False)
+        offer_id = self._id_for_offer("Test Casino")
+        response = await self.client.get(f"/go/{offer_id}", allow_redirects=False)
         self.assertEqual(response.status, 404)
         with bot.db() as con:
-            self.assertEqual(con.execute("SELECT COUNT(*) FROM clicks WHERE offer_id=1").fetchone()[0], 0)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM clicks WHERE offer_id=?", (offer_id,)).fetchone()[0], 0)
 
     async def test_disabled_offer_is_not_redirected(self):
-        response = await self.client.get("/go/3", allow_redirects=False)
+        offer_id = self._id_for_offer("Disabled")
+        response = await self.client.get(f"/go/{offer_id}", allow_redirects=False)
         self.assertEqual(response.status, 404)
 
     async def test_banner_redirect_and_count(self):
-        response = await self.client.get("/go/banner/1", allow_redirects=False)
+        banner_id = self._id_for_banner("Test banner")
+        response = await self.client.get(f"/go/banner/{banner_id}", allow_redirects=False)
         self.assertEqual(response.status, 302)
         self.assertEqual(response.headers["Location"], "https://banner.test")
         with bot.db() as con:
-            self.assertEqual(con.execute("SELECT clicks FROM banners WHERE id=1").fetchone()[0], 1)
+            self.assertEqual(con.execute("SELECT clicks FROM banners WHERE id=?", (banner_id,)).fetchone()[0], 1)
 
     async def test_mini_app_route_serves_html(self):
         response = await self.client.get("/app")
