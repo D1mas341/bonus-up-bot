@@ -1,0 +1,54 @@
+name: Validate BONUS UP PR 2
+
+on:
+  push:
+    branches:
+      - test/pr2-validation
+  workflow_dispatch:
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check Python syntax
+        run: python -m py_compile bot.py BONUS_UP_bot_miniapp.py
+
+      - name: Extract and check Mini App JavaScript syntax
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast
+          import re
+          from pathlib import Path
+
+          tree = ast.parse(Path("bot.py").read_text(encoding="utf-8"))
+          html = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(
+                  isinstance(target, ast.Name) and target.id == "MINI_APP_HTML"
+                  for target in node.targets
+              ):
+                  html = ast.literal_eval(node.value)
+                  break
+          if html is None:
+              raise SystemExit("MINI_APP_HTML assignment not found")
+          scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+          if not scripts:
+              raise SystemExit("Inline JavaScript block not found")
+          Path("/tmp/miniapp.js").write_text("\n".join(scripts), encoding="utf-8")
+          print(f"Extracted {len(scripts)} inline JavaScript block(s)")
+          PY
+          node --check /tmp/miniapp.js
