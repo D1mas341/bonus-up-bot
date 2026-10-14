@@ -211,6 +211,8 @@ async def send_admin(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ запрещён.")
         return
+    # Remove the old persistent user category keyboard before showing inline admin controls.
+    await message.answer("⌨️ Убираю старую клавиатуру…", reply_markup=ReplyKeyboardRemove())
     await message.answer(
         "🛠 АДМИН-ПАНЕЛЬ\n\n"
         "Здесь можно управлять офферами без GitHub и без изменения кода.",
