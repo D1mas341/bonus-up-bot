@@ -1203,6 +1203,13 @@ async def campaign_scheduler(bot: Bot):
                             due = True
                     if not due:
                         continue
+                    # If every recorded user received this same campaign last time,
+                    # skip it without advancing the schedule; try another due campaign.
+                    if len(campaigns) > 1 and users and all(
+                        last_campaign_by_user.get(int(user_id), int(last_id or 0)) == cid
+                        for user_id, last_id in users
+                    ):
+                        continue
                     markup = None
                     if button_text and button_url:
                         base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
@@ -1229,15 +1236,17 @@ async def campaign_scheduler(bot: Bot):
                             # One blocked user or delivery error must not stop the broadcast.
                             continue
                         await asyncio.sleep(0.05)
-                    now_iso = datetime.now(timezone.utc).isoformat()
-                    with closing(db()) as con:
-                        con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
-                                    (delivered,now_iso,cid))
-                        con.execute("INSERT INTO app_settings(key,value) VALUES('last_campaign_broadcast',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                                    (now_iso,))
-                        con.commit()
-                    # One campaign per 8-hour window; avoid a burst when several are enabled.
-                    break
+                    # Do not consume a campaign's schedule if nobody received it.
+                    if delivered:
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        with closing(db()) as con:
+                            con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
+                                        (delivered,now_iso,cid))
+                            con.execute("INSERT INTO app_settings(key,value) VALUES('last_campaign_broadcast',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                        (now_iso,))
+                            con.commit()
+                        # One campaign per 8-hour window; avoid a burst when several are enabled.
+                        break
         except Exception:
             pass
         await asyncio.sleep(60)
