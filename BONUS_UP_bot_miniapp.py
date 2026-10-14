@@ -94,6 +94,12 @@ def init_db():
         if "last_campaign_id" not in user_cols:
             con.execute("ALTER TABLE users ADD COLUMN last_campaign_id INTEGER DEFAULT 0")
         con.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )
+        """)
+        con.execute("""
         CREATE TABLE IF NOT EXISTS campaign_sends (
             campaign_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
@@ -509,6 +515,18 @@ async def adm_toggleone(call: CallbackQuery):
     else:
         await call.answer("Оффер не найден", show_alert=True)
 
+
+
+async def go_campaign(request):
+    cid = int(request.match_info["campaign_id"])
+    with closing(db()) as con:
+        row = con.execute("SELECT button_url FROM campaigns WHERE id=? AND enabled=1", (cid,)).fetchone()
+        if row and row[0]:
+            con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (cid,))
+            con.commit()
+    if not row or not row[0]:
+        raise web.HTTPNotFound()
+    raise web.HTTPFound(row[0])
 
 
 @dp.callback_query(F.data == "adm:users")
@@ -1179,45 +1197,40 @@ async def campaign_scheduler(bot: Bot):
         try:
             with closing(db()) as con:
                 campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
-                    FROM campaigns WHERE enabled=1 ORDER BY position,id""").fetchall()
+                    FROM campaigns WHERE enabled=1 ORDER BY COALESCE(NULLIF(last_sent_at,''),'1970-01-01T00:00:00+00:00'),position,id""").fetchall()
                 users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
-                global_row = con.execute("SELECT value FROM app_settings WHERE key='last_campaign_broadcast'").fetchone()
-            global_last = global_row[0] if global_row else ""
+                last_global = con.execute("SELECT value FROM app_settings WHERE key='last_campaign_broadcast_at'").fetchone()
+            now = datetime.now(timezone.utc)
             global_due = True
-            if global_last:
+            if last_global and last_global[0]:
                 try:
-                    stamp = datetime.fromisoformat(global_last.replace("Z","+00:00"))
-                    # Global throttle prevents several campaigns from blasting users one after another.
-                    global_due = (datetime.now(timezone.utc)-stamp).total_seconds() >= 8*3600
+                    stamp = datetime.fromisoformat(last_global[0].replace("Z","+00:00"))
+                    global_due = (now-stamp).total_seconds() >= 8*3600
                 except Exception:
                     global_due = True
-            if global_due:
-                last_campaign_by_user = {int(user_id): int(last_id or 0) for user_id,last_id in users}
-                for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
+            if campaigns and users and global_due:
+                chosen = None
+                for c in campaigns:
+                    cid,body,media_type,file_id,button_text,button_url,interval,last_sent = c
                     due = not last_sent
                     if last_sent:
                         try:
                             stamp = datetime.fromisoformat(last_sent.replace("Z","+00:00"))
-                            due = (datetime.now(timezone.utc)-stamp).total_seconds() >= int(interval)*3600
+                            due = (now-stamp).total_seconds() >= int(interval)*3600
                         except Exception:
                             due = True
-                    if not due:
-                        continue
-                    # If every recorded user received this same campaign last time,
-                    # skip it without advancing the schedule; try another due campaign.
-                    if len(campaigns) > 1 and users and all(
-                        last_campaign_by_user.get(int(user_id), int(last_id or 0)) == cid
-                        for user_id, last_id in users
-                    ):
-                        continue
+                    if due:
+                        chosen = c
+                        break
+                if chosen:
+                    cid,body,media_type,file_id,button_text,button_url,interval,last_sent = chosen
                     markup = None
                     if button_text and button_url:
-                        base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
-                        tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
-                        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
+                        base = WEBAPP_URL.rsplit("/app",1)[0] if WEBAPP_URL.endswith("/app") else WEBAPP_URL.rstrip("/")
+                        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=f"{base}/go/campaign/{cid}")]])
                     delivered = 0
                     for user_id,last_campaign_id in users:
-                        if len(campaigns) > 1 and last_campaign_by_user.get(int(user_id), int(last_campaign_id or 0)) == cid:
+                        if len(campaigns) > 1 and last_campaign_id == cid:
                             continue
                         try:
                             if media_type == "photo" and file_id:
@@ -1231,22 +1244,14 @@ async def campaign_scheduler(bot: Bot):
                                 con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
                                 con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
                                 con.commit()
-                            last_campaign_by_user[int(user_id)] = int(cid)
                         except Exception:
-                            # One blocked user or delivery error must not stop the broadcast.
                             continue
                         await asyncio.sleep(0.05)
-                    # Do not consume a campaign's schedule if nobody received it.
-                    if delivered:
-                        now_iso = datetime.now(timezone.utc).isoformat()
-                        with closing(db()) as con:
-                            con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
-                                        (delivered,now_iso,cid))
-                            con.execute("INSERT INTO app_settings(key,value) VALUES('last_campaign_broadcast',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                                        (now_iso,))
-                            con.commit()
-                        # One campaign per 8-hour window; avoid a burst when several are enabled.
-                        break
+                    with closing(db()) as con:
+                        con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
+                                    (delivered,now.isoformat(),cid))
+                        con.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('last_campaign_broadcast_at',?)",(now.isoformat(),))
+                        con.commit()
         except Exception:
             pass
         await asyncio.sleep(60)
@@ -1261,6 +1266,7 @@ async def main():
     app.router.add_get("/api/offers", api_offers)
     app.router.add_get("/api/banners", api_banners)
     app.router.add_get("/go/{offer_id}", go_offer)
+    app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
     app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
     app.router.add_get("/terms", terms_page)
