@@ -6,7 +6,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -70,6 +70,37 @@ def init_db():
             if col not in cols:
                 con.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
         con.execute("""
+        CREATE TABLE IF NOT EXISTS campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            media_type TEXT DEFAULT '',
+            media_file_id TEXT DEFAULT '',
+            button_text TEXT DEFAULT '',
+            button_url TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            position INTEGER DEFAULT 0,
+            sent_count INTEGER DEFAULT 0,
+            click_count INTEGER DEFAULT 0,
+            last_sent_at TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS campaign_sends (
+            campaign_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(campaign_id,user_id)
+        )
+        """)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )
+        """)
+        con.execute("""
         CREATE TABLE IF NOT EXISTS banners (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL DEFAULT '',
@@ -111,15 +142,8 @@ def is_admin(user_id: int) -> bool:
 
 
 def main_keyboard():
-    kb = ReplyKeyboardBuilder()
-    kb.button(text="⚽ БУКМЕКЕРЫ")
-    kb.button(text="🎰 КАЗИНО")
-    if WEBAPP_URL:
-        kb.button(text="🎰 ЕЩЁ БОЛЬШЕ БОНУСОВ 🎰", web_app=WebAppInfo(url=WEBAPP_URL))
-        kb.adjust(2, 1)
-    else:
-        kb.adjust(2)
-    return kb.as_markup(resize_keyboard=True)
+    # No persistent reply keyboard; the Mini App is opened from the welcome message.
+    return None
 
 
 def offers_keyboard(category):
@@ -148,6 +172,8 @@ def admin_keyboard():
     kb.button(text="🖼 Баннеры Mini App", callback_data="adm:banners")
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
+    kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
+    kb.button(text="👥 Пользователи", callback_data="adm:users")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -184,12 +210,19 @@ async def start(message: Message):
     if message.text and " " in message.text:
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
-    await message.answer(
-        "🎁 BONUS UP\n\n"
-        "Актуальные предложения БК и онлайн-казино в одном месте.\n\n"
-        "Выберите раздел:",
-        reply_markup=main_keyboard()
+    text = (
+        "🎁 BONUS UP — БУКМЕКЕРЫ И КАЗИНО\\n\\n"
+        "🔥 Самые горячие бонусы в одном месте!\\n\\n"
+        "🎰 Бонусы казино и бесплатные вращения\\n"
+        "⚽ Бонусы на спорт и бесплатные ставки\\n"
+        "🎟️ Эксклюзивные промокоды\\n"
+        "💰 Выбирай предложение под себя!\\n\\n"
+        "👇 Выбирай категорию и забирай свой бонус!"
     )
+    kb = InlineKeyboardBuilder()
+    if WEBAPP_URL:
+        kb.button(text="🎁 Открыть BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
+    await message.answer(text, reply_markup=kb.as_markup() if WEBAPP_URL else None)
 
 
 @dp.message(Command("admin"))
@@ -829,7 +862,7 @@ MINI_APP_HTML = '''<!doctype html>
 :root{--bg:#090909;--card:#191919;--muted:#aaa397;--text:#fff9ec;--gold:#ffd21a;--gold2:#ffe58a;--line:#393021}
 *{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:radial-gradient(ellipse at 50% -10%,#38280b 0,transparent 45%),var(--bg);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .wrap{max-width:760px;margin:auto;padding:calc(18px + env(safe-area-inset-top)) 15px calc(105px + env(safe-area-inset-bottom))}
-.header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:3px 0 22px}.logo{font-size:25px;font-weight:950;letter-spacing:1px}.sub{color:var(--muted);font-size:11px;margin-top:5px;letter-spacing:1px}.head-actions{display:flex;align-items:center;gap:7px}.profile{display:flex;align-items:center;gap:6px;min-width:0;max-width:145px}.avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#ffe58a,#d7a21c);color:#211700;display:flex;align-items:center;justify-content:center;overflow:hidden;font-weight:950;font-size:16px;flex:none;border:1px solid #6b531e}.avatar img{width:100%;height:100%;object-fit:cover}.profile-name{font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:85px}.lang-select{max-width:62px;background:#17140d;color:var(--gold2);border:1px solid #57451d;border-radius:10px;padding:9px 3px;font-weight:850;font-size:12px}.menu-wrap{position:relative}.menu-button{width:36px;height:38px;border:1px solid #49391b;border-radius:12px;background:#17140d;color:var(--text);font-size:23px;font-weight:900}.top-menu{display:none;position:absolute;right:0;top:44px;width:220px;padding:7px;background:#1b1b1b;border:1px solid #4b402b;border-radius:15px;box-shadow:0 12px 40px #000c;z-index:40}.top-menu.open{display:block}.top-menu a{display:block;padding:12px 10px;color:var(--text);text-decoration:none;font-size:13px;border-radius:9px}.top-menu a:active{background:#332914}@media(max-width:390px){.profile-name{display:none}.head-actions{gap:5px}.lang-select{max-width:55px}}
+.header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:3px 0 22px}.logo{font-size:21px;font-weight:950;letter-spacing:.6px;color:var(--gold2);text-shadow:0 1px 0 #5d420b,0 0 12px #d7a21d22}.sub{color:var(--muted);font-size:11px;margin-top:5px;letter-spacing:1px}.head-actions{display:flex;align-items:center;gap:7px}.profile{display:flex;align-items:center;gap:6px;min-width:0;max-width:145px}.avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#ffe58a,#d7a21c);color:#211700;display:flex;align-items:center;justify-content:center;overflow:hidden;font-weight:950;font-size:16px;flex:none;border:1px solid #6b531e}.avatar img{width:100%;height:100%;object-fit:cover}.profile-name{font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:85px}.lang-select{max-width:62px;background:#17140d;color:var(--gold2);border:1px solid #57451d;border-radius:10px;padding:9px 3px;font-weight:850;font-size:12px}.menu-wrap{position:relative}.menu-button{width:36px;height:38px;border:1px solid #49391b;border-radius:12px;background:#17140d;color:var(--text);font-size:23px;font-weight:900}.top-menu{display:none;position:absolute;right:0;top:44px;width:220px;padding:7px;background:#1b1b1b;border:1px solid #4b402b;border-radius:15px;box-shadow:0 12px 40px #000c;z-index:40}.top-menu.open{display:block}.top-menu a{display:block;padding:12px 10px;color:var(--text);text-decoration:none;font-size:13px;border-radius:9px}.top-menu a:active{background:#332914}@media(max-width:390px){.profile-name{display:none}.head-actions{gap:5px}.lang-select{max-width:55px}}
 .tabs{display:flex;gap:8px;background:#12110fee;padding:7px;border:1px solid #4b3a18;border-radius:18px;position:fixed;bottom:calc(8px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);width:calc(100% - 30px);max-width:690px;z-index:20;box-shadow:0 8px 30px #000b;backdrop-filter:blur(18px)}.tab{flex:1;border:0;background:transparent;color:#c8c1b4;padding:13px 8px;border-radius:12px;font-size:13px;font-weight:900;letter-spacing:.4px}.tab.active{background:linear-gradient(115deg,#ffe58a,#d7a21c);color:#181100;box-shadow:0 4px 14px #dca71925}
 .banner{position:relative;overflow:hidden;margin:18px 0 22px;border-radius:23px;padding:0;background:#111;border:1px solid #5b4518;box-shadow:0 12px 30px #0008;cursor:pointer}.banner-image-link{display:block;width:100%;line-height:0}.banner-image-link img{display:block;width:100%;height:auto;max-height:420px;object-fit:contain}.banner h1,.banner p,.banner .go{display:none}
 .section{font-size:22px;font-weight:950;letter-spacing:-.4px;margin:24px 4px 13px}
@@ -841,12 +874,12 @@ MINI_APP_HTML = '''<!doctype html>
 </style></head>
 <body>
 <div class="wrap">
- <div class="header"><div><div class="logo">🎁 BONUS UP</div><div class="sub" data-i18n="subtitle">Бонусы и лучшие предложения</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">RU</option><option value="en">EN</option><option value="de">DE</option><option value="tr">TR</option><option value="hi">HI</option></select><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><a href="/terms" data-i18n="terms">Условия использования</a><a href="/privacy" data-i18n="privacy">Политика конфиденциальности</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
+ <div class="header"><div><div class="logo">♛ BONUS UP ↗</div><div class="sub" data-i18n="subtitle">Лучшие бонусы и промокоды в одном месте!</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">RU</option><option value="en">EN</option><option value="de">DE</option><option value="tr">TR</option><option value="hi">HI</option></select><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><a href="/terms" data-i18n="terms">Условия использования</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
  <div class="tabs"><button class="tab active" data-cat="casino" data-i18n="games">🎰 ИГРЫ</button><button class="tab" data-cat="bets" data-i18n="sport">⚽ СПОРТ</button></div>
  <div class="banner" id="promoBanner"><h1>🔥 Лучшие бонусы в одном месте</h1><p>Выбирай предложение, смотри бонус и переходи к оператору.</p></div>
  <div id="bannerDots" style="display:flex;justify-content:center;gap:6px;margin:-12px 0 18px"></div>
  <div class="section" id="sectionTitle">🎰 Игры</div><div id="offers"><div class="empty">Загрузка предложений…</div></div>
- <div class="note">BONUS UP — каталог партнёрских предложений.<br><span style="display:inline-block;border:2px solid #e74b4b;color:#ff7777;border-radius:6px;padding:3px 8px;margin:9px 0;font-weight:900">18+</span><br>Азартные игры связаны с риском финансовых потерь. Играйте ответственно и только в пределах своих возможностей. Если азарт выходит из-под контроля, обратитесь за профессиональной помощью.<br><br><a href="/terms" style="color:#d7b64e;margin:0 8px" data-i18n="terms">Условия использования</a><a href="/privacy" style="color:#d7b64e;margin:0 8px" data-i18n="privacy">Политика конфиденциальности</a></div>
+ <div class="note"><span style="display:inline-block;border:2px solid #e74b4b;color:#ff7777;border-radius:6px;padding:3px 8px;margin:9px 0;font-weight:900">18+</span><br>Азартные игры связаны с риском финансовых потерь. Играйте ответственно и только в пределах своих возможностей. Если азарт выходит из-под контроля, обратитесь за профессиональной помощью.<br><br><a href="/terms" style="color:#d7b64e;margin:0 8px" data-i18n="terms">Условия использования</a></div>
 </div>
 <div class="modal-backdrop" id="modalBackdrop" role="dialog" aria-modal="true" aria-label="Информация о предложении"><div class="modal" id="modalContent"></div></div>
 <script>
@@ -960,13 +993,63 @@ async def go_banner(request):
     raise web.HTTPFound(row[0])
 
 async def terms_page(request):
-    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Переход по партнёрским ссылкам может приносить проекту вознаграждение. Только 18+.</p></body></html>", content_type="text/html")
+    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
 
 async def privacy_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Политика конфиденциальности</h1><p>Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.</p><p>После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.</p><p>Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram.</p></body></html>", content_type="text/html")
 
 async def health(request):
     return web.Response(text="ok")
+
+async def campaign_scheduler(bot: Bot):
+    from datetime import datetime, timezone
+    while True:
+        try:
+            with closing(db()) as con:
+                campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
+                    FROM campaigns WHERE enabled=1 ORDER BY position,id""").fetchall()
+                users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
+            for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
+                due = not last_sent
+                if last_sent:
+                    try:
+                        stamp = datetime.fromisoformat(last_sent.replace("Z","+00:00"))
+                        due = (datetime.now(timezone.utc)-stamp).total_seconds() >= int(interval)*3600
+                    except Exception:
+                        due = True
+                if not due:
+                    continue
+                markup = None
+                if button_text and button_url:
+                    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=button_url)]])
+                delivered = 0
+                for user_id,last_campaign_id in users:
+                    if len(campaigns) > 1 and last_campaign_id == cid:
+                        continue
+                    try:
+                        if media_type == "photo" and file_id:
+                            await bot.send_photo(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                        elif media_type == "video" and file_id:
+                            await bot.send_video(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                        else:
+                            await bot.send_message(user_id, body[:4096], reply_markup=markup)
+                        delivered += 1
+                        with closing(db()) as con:
+                            con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
+                            con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
+                            con.commit()
+                    except Exception:
+                        # One blocked user or delivery error must not stop the broadcast.
+                        continue
+                    await asyncio.sleep(0.05)
+                with closing(db()) as con:
+                    con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
+                                (delivered,datetime.now(timezone.utc).isoformat(),cid))
+                    con.commit()
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
 
 async def main():
     init_db()
@@ -986,7 +1069,11 @@ async def main():
     port = int(os.getenv("PORT", "8080"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    await dp.start_polling(bot)
+    scheduler_task = asyncio.create_task(campaign_scheduler(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler_task.cancel()
 
 
 if __name__ == "__main__":
