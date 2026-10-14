@@ -638,7 +638,7 @@ async def adm_promo(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    await call.message.edit_text("🏷 Выбери оффер, чтобы изменить промокод и логотип:", reply_markup=admin_offer_keyboard("adm:promoon"))
+    await call.message.edit_text("🏷 Выбери оффер для настройки промокода или логотипа:", reply_markup=admin_offer_keyboard("adm:promoon"))
     await call.answer()
 
 
@@ -648,9 +648,60 @@ async def adm_promoon(call: CallbackQuery):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     oid = int(call.data.split(":")[2])
-    admin_state[call.from_user.id] = {"action":"promo","step":"promo_code","offer_id":oid,"data":{}}
-    await call.message.edit_text("🏷 НАСТРОЙКА ОФФЕРА\n\n1/2. Отправь промокод. Если убрать промокод — напиши -.\n\nПосле этого можно будет отправить логотип картинкой прямо сюда или вставить ссылку на изображение.")
+    with closing(db()) as con:
+        row = con.execute("SELECT name,promo_code,logo_url FROM offers WHERE id=?", (oid,)).fetchone()
+    if not row:
+        await call.answer("Оффер не найден", show_alert=True)
+        return
+    name, promo_code, logo_url = row
+    admin_state.pop(call.from_user.id, None)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Изменить промокод", callback_data=f"adm:promocode:{oid}")
+    kb.button(text="🖼 Загрузить / изменить логотип", callback_data=f"adm:offerlogo:{oid}")
+    kb.button(text="🗑 Удалить логотип", callback_data=f"adm:clearlogo:{oid}")
+    kb.button(text="⬅️ К списку офферов", callback_data="adm:promo")
+    kb.adjust(1)
+    await call.message.edit_text(
+        f"🏷 {name}\n\nПромокод: {promo_code or 'не задан'}\nЛоготип: {'добавлен' if logo_url else 'не задан'}\n\nВыбери, что нужно изменить. Промокод и логотип сохраняются независимо.",
+        reply_markup=kb.as_markup()
+    )
     await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:promocode:"))
+async def adm_promocode(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    admin_state[call.from_user.id] = {"action":"promo_code_only","step":"promo_code","offer_id":oid,"data":{}}
+    await call.message.edit_text("✏️ Отправь новый промокод. Чтобы удалить существующий, отправь -.")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:offerlogo:"))
+async def adm_offerlogo(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    admin_state[call.from_user.id] = {"action":"logo_only","step":"logo_url","offer_id":oid,"data":{}}
+    await call.message.edit_text("🖼 Отправь логотип изображением (можно как фото или как файл JPG/PNG до 1,5 МБ) либо прямую HTTPS-ссылку. Промокод не изменится. Для отмены напиши «отмена».")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:clearlogo:"))
+async def adm_clearlogo(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        con.execute("UPDATE offers SET logo_url='' WHERE id=?", (oid,))
+        con.commit()
+    await call.answer("Логотип удалён")
+    call.data = f"adm:promoon:{oid}"
+    await adm_promoon(call)
 
 
 @dp.callback_query(F.data == "adm:banners")
@@ -696,33 +747,42 @@ async def adm_banneradd(call: CallbackQuery):
     await call.answer()
 
 
-@dp.message(F.photo | F.video)
+@dp.message(F.photo | F.video | F.document)
 async def admin_campaign_media(message: Message):
     uid = message.from_user.id
     state = admin_state.get(uid)
     if not is_admin(uid) or not state:
         return
 
-    # Offer logo upload: store the image as a data URL so Mini App can render it
-    # without relying on an external image host. Limit upload size to keep SQLite light.
-    if state.get("action") == "promo" and state.get("step") == "logo_url":
-        if not message.photo:
-            await message.answer("Пришли логотип как изображение (не видео) или отправь ссылку на картинку.")
+    # Offer logo upload accepts Telegram photos and image documents independently
+    # from promo-code editing. Existing promo_code is never overwritten here.
+    if state.get("action") in {"logo_only", "promo"} and state.get("step") == "logo_url":
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            mime = "image/jpeg"
+            size = message.photo[-1].file_size or 0
+        elif message.document and (message.document.mime_type or "").startswith("image/"):
+            file_id = message.document.file_id
+            mime = message.document.mime_type or "image/jpeg"
+            size = message.document.file_size or 0
+        elif message.video:
+            await message.answer("Нужно изображение, не видео. Отправь логотип как фото или файл JPG/PNG.")
             return
-        photo = message.photo[-1]
-        if photo.file_size and photo.file_size > 1_500_000:
+        else:
+            return
+        if size > 1_500_000:
             await message.answer("Изображение слишком большое. Отправь логотип размером до 1,5 МБ.")
             return
         buffer = BytesIO()
-        await message.bot.download(photo.file_id, destination=buffer)
+        await message.bot.download(file_id, destination=buffer)
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-        logo = "data:image/jpeg;base64," + encoded
+        logo = f"data:{mime};base64," + encoded
         with closing(db()) as con:
-            con.execute("UPDATE offers SET promo_code=?,logo_url=? WHERE id=?",
-                        (state["data"].get("promo_code",""), logo, state["offer_id"]))
+            con.execute("UPDATE offers SET logo_url=? WHERE id=?", (logo, state["offer_id"]))
             con.commit()
+        oid = state["offer_id"]
         admin_state.pop(uid, None)
-        await message.answer("✅ Промокод и логотип сохранены. Открой Mini App заново, чтобы проверить карточку.", reply_markup=admin_keyboard())
+        await message.answer("✅ Логотип сохранён. Промокод не менялся. Открой Mini App заново, чтобы проверить карточку.", reply_markup=admin_keyboard())
         return
 
     if state.get("action") != "campaign" or state.get("step") != "media":
@@ -730,9 +790,12 @@ async def admin_campaign_media(message: Message):
     if message.photo:
         state["data"]["media_type"] = "photo"
         state["data"]["media_file_id"] = message.photo[-1].file_id
-    else:
+    elif message.video:
         state["data"]["media_type"] = "video"
         state["data"]["media_file_id"] = message.video.file_id
+    else:
+        await message.answer("Для рекламной публикации отправь фото или видео, не файл документа.")
+        return
     state["step"] = "button_text"
     await message.answer("4/6. Текст кнопки или - без кнопки:")
 
@@ -823,24 +886,33 @@ async def admin_text(message: Message):
             await message.answer("✅ Публикация сохранена и выключена. Включи её кнопкой в разделе «📢 Рекламные публикации», когда будешь готов.", reply_markup=admin_keyboard())
             return
 
-    if action == "promo":
-        if step == "promo_code":
-            state["data"]["promo_code"] = "" if text == "-" else text
-            state["step"] = "logo_url"
-            await message.answer("2/2. Отправь логотип КАРТИНКОЙ прямо в чат (лучше до 1,5 МБ) или пришли прямую HTTPS-ссылку на изображение. Чтобы убрать логотип, напиши -.")
+    if action == "promo_code_only" and step == "promo_code":
+        promo = "" if text == "-" else text
+        with closing(db()) as con:
+            con.execute("UPDATE offers SET promo_code=? WHERE id=?", (promo, state["offer_id"]))
+            con.commit()
+        admin_state.pop(uid, None)
+        await message.answer("✅ Промокод сохранён. Логотип не менялся.", reply_markup=admin_keyboard())
+        return
+
+    if action in {"logo_only", "promo"} and step == "logo_url":
+        logo = "" if text == "-" else text
+        if logo and not logo.startswith(("https://", "http://")):
+            await message.answer("Отправь логотип фото/файлом, прямой HTTPS-ссылкой на изображение или «-» для удаления.")
             return
-        if step == "logo_url":
-            logo = "" if text == "-" else text
-            if logo and not logo.startswith(("https://", "http://")):
-                await message.answer("Пришли логотип картинкой прямо в чат, прямой ссылкой HTTPS на изображение или - для удаления.")
-                return
-            with closing(db()) as con:
-                con.execute("UPDATE offers SET promo_code=?,logo_url=? WHERE id=?",
-                            (state["data"]["promo_code"], logo, state["offer_id"]))
-                con.commit()
-            admin_state.pop(uid, None)
-            await message.answer("✅ Промокод и логотип сохранены.", reply_markup=admin_keyboard())
-            return
+        with closing(db()) as con:
+            con.execute("UPDATE offers SET logo_url=? WHERE id=?", (logo, state["offer_id"]))
+            con.commit()
+        admin_state.pop(uid, None)
+        await message.answer("✅ Логотип сохранён. Промокод не менялся.", reply_markup=admin_keyboard())
+        return
+
+    if action == "promo" and step == "promo_code":
+        # Compatibility with any in-flight old flow: store the code before logo selection.
+        state["data"]["promo_code"] = "" if text == "-" else text
+        state["step"] = "logo_url"
+        await message.answer("2/2. Теперь отправь логотип картинкой/файлом или прямой HTTPS-ссылкой. Чтобы оставить логотип без изменений, отправь «отмена».")
+        return
 
     if action == "banner":
         fields = [
