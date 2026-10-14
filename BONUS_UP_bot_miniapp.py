@@ -753,6 +753,10 @@ async def admin_text(message: Message):
             await message.answer("6/6. Интервал в часах: 8 = 3 раза в день, 12 = 2 раза в день.")
             return
         if step == "interval":
+            if not d.get("body") and not d.get("media_file_id"):
+                await message.answer("Нужен текст или медиа. Отправь текст на шаге 2 либо фото/видео на шаге 3.")
+                state["step"] = "body"
+                return
             try:
                 interval = int(text)
                 if interval < 8 or interval > 24:
@@ -766,7 +770,7 @@ async def admin_text(message: Message):
                     (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,interval))
                 con.commit()
             admin_state.pop(uid, None)
-            await message.answer("✅ Публикация сохранена и включена.", reply_markup=admin_keyboard())
+            await message.answer("✅ Публикация сохранена и выключена. Включи её кнопкой в разделе «📢 Рекламные публикации», когда будешь готов.", reply_markup=admin_keyboard())
             return
 
     if action == "promo":
