@@ -125,6 +125,23 @@ def init_db():
         banner_cols = [r[1] for r in con.execute("PRAGMA table_info(banners)").fetchall()]
         if "clicks" not in banner_cols:
             con.execute("ALTER TABLE banners ADD COLUMN clicks INTEGER DEFAULT 0")
+
+        # Add the prepared 1win carousel artwork once; do not duplicate it on restarts.
+        banner_exists = con.execute(
+            "SELECT id FROM banners WHERE title=? LIMIT 1", ("1win BONUS UP",)
+        ).fetchone()
+        if not banner_exists:
+            con.execute(
+                """INSERT INTO banners(title,text,image_url,button_text,url,enabled,position)
+                   VALUES(?,?,?,?,?,1,1)""",
+                (
+                    "1win BONUS UP",
+                    "",
+                    "https://raw.githubusercontent.com/D1mas341/bonus-up-bot/main/assets/bonus-up-1win-carousel.svg",
+                    "",
+                    "https://r1wrokkc.life/?p=adlj",
+                ),
+            )
         con.commit()
 
 
