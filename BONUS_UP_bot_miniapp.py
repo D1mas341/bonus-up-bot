@@ -6,7 +6,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -20,6 +20,7 @@ ADMIN_IDS = {
 }
 DB_PATH = os.getenv("DB_PATH", "bonus_up.db")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
+WELCOME_VIDEO_PATH = os.getenv("WELCOME_VIDEO_PATH", "")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -228,7 +229,11 @@ async def start(message: Message):
     kb = InlineKeyboardBuilder()
     if WEBAPP_URL:
         kb.button(text="🎁 Открыть BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
-    await message.answer(text, reply_markup=kb.as_markup() if WEBAPP_URL else None)
+    markup = kb.as_markup() if WEBAPP_URL else None
+    if WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
+        await message.answer_video(FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup)
 
 
 @dp.message(Command("admin"))
@@ -757,7 +762,7 @@ async def admin_text(message: Message):
                 return
             with closing(db()) as con:
                 pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM campaigns").fetchone()[0]
-                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours) VALUES(?,?,?,?,?,?,1,?,?)",
+                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours) VALUES(?,?,?,?,?,?,0,?,?)",
                     (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,interval))
                 con.commit()
             admin_state.pop(uid, None)
@@ -1172,6 +1177,7 @@ async def campaign_scheduler(bot: Bot):
                 campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
                     FROM campaigns WHERE enabled=1 ORDER BY position,id""").fetchall()
                 users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
+            last_campaign_by_user = {int(user_id): int(last_id or 0) for user_id,last_id in users}
             for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
                 due = not last_sent
                 if last_sent:
@@ -1189,7 +1195,8 @@ async def campaign_scheduler(bot: Bot):
                     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
                 delivered = 0
                 for user_id,last_campaign_id in users:
-                    if len(campaigns) > 1 and last_campaign_id == cid:
+                    current_last = last_campaign_by_user.get(int(user_id), int(last_campaign_id or 0))
+                    if len(campaigns) > 1 and current_last == cid:
                         continue
                     try:
                         if media_type == "photo" and file_id:
@@ -1203,6 +1210,7 @@ async def campaign_scheduler(bot: Bot):
                             con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
                             con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
                             con.commit()
+                        last_campaign_by_user[int(user_id)] = int(cid)
                     except Exception:
                         # One blocked user or delivery error must not stop the broadcast.
                         continue
