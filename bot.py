@@ -126,18 +126,31 @@ def init_db():
         if "clicks" not in banner_cols:
             con.execute("ALTER TABLE banners ADD COLUMN clicks INTEGER DEFAULT 0")
 
-        # Add the prepared 1win carousel artwork once; do not duplicate it on restarts.
-        banner_exists = con.execute(
-            "SELECT id FROM banners WHERE title=? LIMIT 1", ("1win BONUS UP",)
+        # Replace the existing 1win carousel slide instead of appending a second slide.
+        prepared_banner_url = "https://raw.githubusercontent.com/D1mas341/bonus-up-bot/main/assets/bonus-up-1win-carousel.svg"
+        existing_1win = con.execute(
+            """SELECT id FROM banners
+               WHERE lower(title || ' ' || text) LIKE '%1win%'
+               ORDER BY position,id LIMIT 1"""
         ).fetchone()
-        if not banner_exists:
+        if existing_1win:
+            con.execute(
+                "UPDATE banners SET title=?, text='', image_url=?, enabled=1 WHERE id=?",
+                ("1win BONUS UP", prepared_banner_url, existing_1win[0]),
+            )
+            # Remove only the duplicate seed created by the previous release, if present.
+            con.execute(
+                "DELETE FROM banners WHERE title=? AND id<>?",
+                ("1win BONUS UP", existing_1win[0]),
+            )
+        else:
             con.execute(
                 """INSERT INTO banners(title,text,image_url,button_text,url,enabled,position)
                    VALUES(?,?,?,?,?,1,1)""",
                 (
                     "1win BONUS UP",
                     "",
-                    "https://raw.githubusercontent.com/D1mas341/bonus-up-bot/main/assets/bonus-up-1win-carousel.svg",
+                    prepared_banner_url,
                     "",
                     "https://r1wrokkc.life/?p=adlj",
                 ),
