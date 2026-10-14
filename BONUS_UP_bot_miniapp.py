@@ -685,7 +685,31 @@ async def adm_banneradd(call: CallbackQuery):
 async def admin_campaign_media(message: Message):
     uid = message.from_user.id
     state = admin_state.get(uid)
-    if not is_admin(uid) or not state or state.get("action") != "campaign" or state.get("step") != "media":
+    if not is_admin(uid) or not state:
+        return
+    if state.get("action") == "promo" and state.get("step") == "logo_url" and message.photo:
+        offer_id = int(state["offer_id"])
+        logo_dir = os.getenv("LOGO_DIR", "/data/logos")
+        os.makedirs(logo_dir, exist_ok=True)
+        filename = f"offer-logo-{offer_id}.jpg"
+        destination = os.path.join(logo_dir, filename)
+        try:
+            photo = message.photo[-1]
+            file = await message.bot.get_file(photo.file_id)
+            await message.bot.download_file(file.file_path, destination=destination)
+        except Exception:
+            await message.answer("Не удалось сохранить изображение. Попробуй отправить фото ещё раз или пришли прямую HTTPS-ссылку.")
+            return
+        base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+        logo_url = f"{base_url}/logos/{filename}" if base_url else f"/logos/{filename}"
+        with closing(db()) as con:
+            con.execute("UPDATE offers SET promo_code=?,logo_url=? WHERE id=?",
+                        (state["data"].get("promo_code", ""), logo_url, offer_id))
+            con.commit()
+        admin_state.pop(uid, None)
+        await message.answer("✅ Промокод сохранён, логотип загружен из галереи и привязан к офферу.", reply_markup=admin_keyboard())
+        return
+    if state.get("action") != "campaign" or state.get("step") != "media":
         return
     if message.photo:
         state["data"]["media_type"] = "photo"
@@ -777,12 +801,12 @@ async def admin_text(message: Message):
         if step == "promo_code":
             state["data"]["promo_code"] = "" if text == "-" else text
             state["step"] = "logo_url"
-            await message.answer("Отправь HTTPS-ссылку на логотип. Если не нужен — напиши -.")
+            await message.answer("🖼 Отправь логотип фотографией прямо сюда из галереи телефона. Можно также прислать прямую HTTPS-ссылку на изображение. Чтобы убрать логотип, отправь -.")
             return
         if step == "logo_url":
             logo = "" if text == "-" else text
             if logo and not logo.startswith(("https://", "http://")):
-                await message.answer("Нужна ссылка на изображение http:// или https://, либо -")
+                await message.answer("Пришли фото логотипа из галереи, прямую HTTPS-ссылку на изображение или - чтобы убрать логотип.")
                 return
             with closing(db()) as con:
                 con.execute("UPDATE offers SET promo_code=?,logo_url=? WHERE id=?",
@@ -1064,7 +1088,7 @@ document.getElementById("createShortcut").addEventListener("click",()=>{if(tg&&t
 document.addEventListener("click",e=>{if(!e.target.closest(".menu-wrap")){topMenu.classList.remove("open");menuButton.setAttribute("aria-expanded","false")}});
 applyLanguage();
 function esc(s){return String(s??"").replace(/[&<>"\']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",\'"\':"&quot;","\'":"&#039;"}[m]))}
-function logoHtml(x,cls){const name=String(x.name||"?").trim();const initials=name.split(/\s+/).slice(0,2).map(v=>v[0]||"").join("").toUpperCase();const n=name.toLowerCase();const domain=n.includes("1win")?"1win.com":(n.includes("зенит")||n.includes("zenit"))?"zenit.win":"";const url=x.logo_url|| (domain?"https://www.google.com/s2/favicons?domain="+domain+"&sz=128":"");return '<span class="brand-fallback">'+esc(initials)+'</span>'+(url?'<img src="'+esc(url)+'" alt="'+esc(name)+'" loading="lazy" onerror="this.remove()">':"")}
+function logoHtml(x,cls){const name=String(x.name||"?").trim();const initials=name.split(/\s+/).slice(0,2).map(v=>v[0]||"").join("").toUpperCase();const url=String(x.logo_url||"").trim();return '<span class="brand-fallback">'+esc(initials)+'</span>'+(url?'<img src="'+esc(url)+'" alt="'+esc(name)+'" loading="lazy" onerror="this.remove()">':"")}
 function bonusBadges(value){if(!value)return "";let parts=String(value).split(/\s*(?:\||\+|,|;)\s*/).filter(Boolean);if(parts.length===1){let match=String(value).match(/(\d+\s*FS|FS\s*\d+|\d+\s*%|Up to\s*[\d$€£]+)/ig);if(match&&match.length>1)parts=match}return parts.map((p,i)=>\'<span class="bonus \'+(/up to/i.test(p)?"alt":"")+\'">\'+esc(p.trim())+\'</span>\').join("")}
 function hasPartnerLink(x){try{const u=new URL(String(x.url||""));const h=u.hostname.toLowerCase();return (u.protocol==="https:"||u.protocol==="http:")&&!["example.com","www.example.com","example.org","www.example.org","example.net","www.example.net"].includes(h)&&!h.endsWith(".example.com")&&!h.endsWith(".example.org")&&!h.endsWith(".example.net")}catch(e){return false}}
 function render(cat){currentCat=cat;const box=document.getElementById("offers");const items=all.filter(x=>x.category===cat);const catNames={ru:{casino:"Игры",bets:"Спорт"},en:{casino:"Games",bets:"Sports"},de:{casino:"Spiele",bets:"Sport"},tr:{casino:"Oyunlar",bets:"Spor"},hi:{casino:"गेम",bets:"स्पोर्ट्स"}};document.getElementById("sectionTitle").textContent=(cat==="bets"?"⚽ ":"🎰 ")+((catNames[language]||catNames.ru)[cat]);if(!items.length){box.innerHTML='<div class="empty">'+esc(t("empty"))+'</div>';return}
@@ -1172,6 +1196,15 @@ async def terms_page(request):
 async def privacy_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Политика конфиденциальности</h1><p>Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.</p><p>После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.</p><p>Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram.</p></body></html>", content_type="text/html")
 
+async def logo_asset(request):
+    filename = request.match_info.get("filename", "")
+    if not filename.startswith("offer-logo-") or not filename.endswith(".jpg") or os.path.basename(filename) != filename:
+        raise web.HTTPNotFound()
+    path = os.path.join(os.getenv("LOGO_DIR", "/data/logos"), filename)
+    if not os.path.isfile(path):
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+
 async def health(request):
     return web.Response(text="ok")
 
@@ -1262,6 +1295,7 @@ async def main():
     app.router.add_get("/app", mini_app)
     app.router.add_get("/api/offers", api_offers)
     app.router.add_get("/api/banners", api_banners)
+    app.router.add_get("/logos/{filename}", logo_asset)
     app.router.add_get("/go/{offer_id}", go_offer)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
     app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
