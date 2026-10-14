@@ -6,7 +6,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -20,6 +20,7 @@ ADMIN_IDS = {
 }
 DB_PATH = os.getenv("DB_PATH", "bonus_up.db")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
+WELCOME_VIDEO_PATH = os.getenv("WELCOME_VIDEO_PATH", "")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -228,7 +229,11 @@ async def start(message: Message):
     kb = InlineKeyboardBuilder()
     if WEBAPP_URL:
         kb.button(text="🎁 Открыть BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
-    await message.answer(text, reply_markup=kb.as_markup() if WEBAPP_URL else None)
+    markup = kb.as_markup() if WEBAPP_URL else None
+    if WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
+        await message.answer_video(FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup)
 
 
 @dp.message(Command("admin"))
@@ -757,7 +762,7 @@ async def admin_text(message: Message):
                 return
             with closing(db()) as con:
                 pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM campaigns").fetchone()[0]
-                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours) VALUES(?,?,?,?,?,?,1,?,?)",
+                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours) VALUES(?,?,?,?,?,?,0,?,?)",
                     (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,interval))
                 con.commit()
             admin_state.pop(uid, None)
