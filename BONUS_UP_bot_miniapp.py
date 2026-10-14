@@ -719,6 +719,16 @@ async def admin_text(message: Message):
     step = state["step"]
     text = (message.text or "").strip()
 
+    # Never consume bot commands as field values (e.g. /admin as a promo code).
+    if text.startswith("/"):
+        if text.split()[0].split("@")[0].lower() == "/admin":
+            admin_state.pop(uid, None)
+            await send_admin(message)
+        elif text.split()[0].split("@")[0].lower() == "/start":
+            admin_state.pop(uid, None)
+            await start(message)
+        return
+
     if text.lower() in {"отмена", "/cancel"}:
         admin_state.pop(uid, None)
         await message.answer("❌ Отменено.", reply_markup=admin_keyboard())
