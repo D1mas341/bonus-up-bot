@@ -6,7 +6,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, ReplyKeyboardRemove
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -148,9 +148,16 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+def mini_app_keyboard():
+    kb = InlineKeyboardBuilder()
+    if WEBAPP_URL:
+        kb.button(text="🎁 Ещё больше бонусов 🎁", web_app=WebAppInfo(url=WEBAPP_URL))
+    return kb.as_markup() if WEBAPP_URL else None
+
+
 def main_keyboard():
-    # No persistent reply keyboard; the Mini App is opened from the welcome message.
-    return None
+    # The catalog lives inside the Mini App; do not recreate old category buttons.
+    return mini_app_keyboard()
 
 
 def offers_keyboard(category):
@@ -217,23 +224,27 @@ async def start(message: Message):
     if message.text and " " in message.text:
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
+
+    # Clear any old persistent Telegram reply keyboard still cached by the client.
     text = (
         "🎁 BONUS UP — БУКМЕКЕРЫ И КАЗИНО\n\n"
-        "🔥 Самые горячие бонусы в одном месте!\n\n"
+        "🔥 Открой для себя самые горячие бонусы!\n"
         "🎰 Бонусы казино и бесплатные вращения\n"
-        "⚽ Бонусы на спорт и бесплатные ставки\n"
+        "⚽ Спортивные бонусы и бесплатные ставки\n"
         "🎟️ Эксклюзивные промокоды\n"
-        "💰 Выбирай предложение под себя!\n\n"
+        "💰 Найди свой следующий бонус!\n\n"
         "👇 Выбирай категорию и забирай свой бонус!"
     )
-    kb = InlineKeyboardBuilder()
-    if WEBAPP_URL:
-        kb.button(text="🎁 Открыть BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
-    markup = kb.as_markup() if WEBAPP_URL else None
     if WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
-        await message.answer_video(FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup)
+        await message.answer_video(
+            FSInputFile(WELCOME_VIDEO_PATH),
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await message.answer(text, reply_markup=mini_app_keyboard())
     else:
-        await message.answer(text, reply_markup=markup)
+        await message.answer(text, reply_markup=ReplyKeyboardRemove())
+        if WEBAPP_URL:
+            await message.answer("👇 Открой каталог бонусов:", reply_markup=mini_app_keyboard())
 
 
 @dp.message(Command("admin"))
@@ -244,8 +255,8 @@ async def admin(message: Message):
 @dp.message(Command("bonus"))
 async def bonus(message: Message):
     await message.answer(
-        "🎁 BONUS UP\n\nОткройте витрину с актуальными предложениями:",
-        reply_markup=main_keyboard()
+        "🎁 BONUS UP\n\nАктуальные предложения букмекеров и казино — в одном месте.",
+        reply_markup=mini_app_keyboard()
     )
 
 
@@ -268,9 +279,9 @@ async def casino(message: Message):
 @dp.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
     await call.message.edit_text(
-        "🎁 BONUS UP\n\nАктуальные предложения БК и онлайн-казино в одном месте."
+        "🎁 BONUS UP\n\nАктуальные предложения букмекеров и казино — в одном месте.",
+        reply_markup=mini_app_keyboard()
     )
-    await call.message.answer("Выберите раздел:", reply_markup=main_keyboard())
     await call.answer()
 
 
@@ -1097,7 +1108,14 @@ async def api_offers(request):
     with closing(db()) as con:
         rows = con.execute("""
             SELECT id,category,name,description,bonus,url,promo_code,logo_url
-            FROM offers WHERE enabled=1 ORDER BY category,position,id
+            FROM offers WHERE enabled=1
+            ORDER BY category,
+                CASE
+                    WHEN lower(name) LIKE '%1win%' THEN 0
+                    WHEN lower(name) LIKE '%зенит%' OR lower(name) LIKE '%zenit%' THEN 1
+                    ELSE 2
+                END,
+                position,id
         """).fetchall()
     return web.json_response([
         {"id":r[0],"category":r[1],"name":r[2],"description":r[3],"bonus":r[4],
@@ -1107,7 +1125,14 @@ async def api_offers(request):
 
 async def api_banners(request):
     with closing(db()) as con:
-        rows = con.execute("SELECT id,title,text,image_url,button_text,url FROM banners WHERE enabled=1 ORDER BY position,id").fetchall()
+        rows = con.execute("""
+            SELECT id,title,text,image_url,button_text,url
+            FROM banners WHERE enabled=1
+            ORDER BY CASE
+                WHEN lower(title || ' ' || text) LIKE '%1win%' THEN 0
+                ELSE 1
+            END, position,id
+        """).fetchall()
     return web.json_response([{"id":r[0],"title":r[1],"text":r[2],"image_url":r[3],"button_text":r[4],"url":r[5]} for r in rows])
 
 def is_partner_url(value):
