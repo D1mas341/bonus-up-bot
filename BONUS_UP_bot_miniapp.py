@@ -499,6 +499,76 @@ async def adm_toggleone(call: CallbackQuery):
         await call.answer("Оффер не найден", show_alert=True)
 
 
+
+@dp.callback_query(F.data == "adm:users")
+async def adm_users(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        today = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
+    await call.message.edit_text(f"👥 ПОЛЬЗОВАТЕЛИ\\n\\nВсего уникальных: {total}\\nНовых сегодня (UTC): {today}", reply_markup=admin_keyboard())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:campaigns")
+async def adm_campaigns(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        rows = con.execute("SELECT id,title,enabled,interval_hours,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
+    kb = InlineKeyboardBuilder()
+    lines = ["📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ", "", "Текст, фото/видео, CTA-кнопки и расписание."]
+    for cid,title,enabled,interval,sent,clicks in rows:
+        lines.append(f"{'🟢' if enabled else '🔴'} #{cid} {title or 'Без названия'} — каждые {interval} ч. | отправок {sent} | кликов {clicks}")
+        kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{cid}", callback_data=f"adm:camp_toggle:{cid}")
+        kb.button(text=f"🗑 Удалить #{cid}", callback_data=f"adm:camp_delete:{cid}")
+    kb.button(text="➕ Создать публикацию", callback_data="adm:camp_add")
+    kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
+    kb.adjust(1)
+    await call.message.edit_text("\\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:camp_add")
+async def adm_camp_add(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    admin_state[call.from_user.id] = {"action":"campaign","step":"title","data":{}}
+    await call.message.edit_text("📢 НОВАЯ ПУБЛИКАЦИЯ\\n\\n1/6. Название для админки:")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:camp_toggle:"))
+async def adm_camp_toggle(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    cid = int(call.data.rsplit(":",1)[1])
+    with closing(db()) as con:
+        con.execute("UPDATE campaigns SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (cid,))
+        con.commit()
+    await call.answer("Статус изменён")
+    await adm_campaigns(call)
+
+
+@dp.callback_query(F.data.startswith("adm:camp_delete:"))
+async def adm_camp_delete(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    cid = int(call.data.rsplit(":",1)[1])
+    with closing(db()) as con:
+        con.execute("DELETE FROM campaign_sends WHERE campaign_id=?", (cid,))
+        con.execute("DELETE FROM campaigns WHERE id=?", (cid,))
+        con.commit()
+    await call.answer("Удалено")
+    await adm_campaigns(call)
+
+
 @dp.callback_query(F.data == "adm:clicks")
 async def adm_clicks(call: CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -600,6 +670,22 @@ async def adm_banneradd(call: CallbackQuery):
     await call.answer()
 
 
+@dp.message(F.photo | F.video)
+async def admin_campaign_media(message: Message):
+    uid = message.from_user.id
+    state = admin_state.get(uid)
+    if not is_admin(uid) or not state or state.get("action") != "campaign" or state.get("step") != "media":
+        return
+    if message.photo:
+        state["data"]["media_type"] = "photo"
+        state["data"]["media_file_id"] = message.photo[-1].file_id
+    else:
+        state["data"]["media_type"] = "video"
+        state["data"]["media_file_id"] = message.video.file_id
+    state["step"] = "button_text"
+    await message.answer("4/6. Текст кнопки или - без кнопки:")
+
+
 @dp.message()
 async def admin_text(message: Message):
     uid = message.from_user.id
@@ -615,6 +701,62 @@ async def admin_text(message: Message):
         admin_state.pop(uid, None)
         await message.answer("❌ Отменено.", reply_markup=admin_keyboard())
         return
+
+    if action == "campaign":
+        d = state["data"]
+        if step == "title":
+            d["title"] = text
+            state["step"] = "body"
+            await message.answer("2/6. Текст публикации:")
+            return
+        if step == "body":
+            d["body"] = "" if text == "-" else text
+            state["step"] = "media"
+            await message.answer("3/6. Пришли фото или видео отдельным сообщением. Для текста без медиа напиши -.")
+            return
+        if step == "media":
+            if text != "-":
+                await message.answer("Пришли фото/видео отдельным сообщением или напиши -.")
+                return
+            d["media_type"] = ""
+            d["media_file_id"] = ""
+            state["step"] = "button_text"
+            await message.answer("4/6. Текст кнопки или - без кнопки:")
+            return
+        if step == "button_text":
+            d["button_text"] = "" if text == "-" else text[:64]
+            if d["button_text"]:
+                state["step"] = "button_url"
+                await message.answer("5/6. Ссылка кнопки (https://...).")
+            else:
+                d["button_url"] = ""
+                state["step"] = "interval"
+                await message.answer("6/6. Интервал в часах: 8 = 3 раза в день, 12 = 2 раза в день.")
+            return
+        if step == "button_url":
+            if not text.startswith(("https://","http://")):
+                await message.answer("Нужна ссылка http:// или https://.")
+                return
+            d["button_url"] = text
+            state["step"] = "interval"
+            await message.answer("6/6. Интервал в часах: 8 = 3 раза в день, 12 = 2 раза в день.")
+            return
+        if step == "interval":
+            try:
+                interval = int(text)
+                if interval < 8 or interval > 24:
+                    raise ValueError
+            except ValueError:
+                await message.answer("Введи число от 8 до 24.")
+                return
+            with closing(db()) as con:
+                pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM campaigns").fetchone()[0]
+                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours) VALUES(?,?,?,?,?,?,1,?,?)",
+                    (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,interval))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Публикация сохранена и включена.", reply_markup=admin_keyboard())
+            return
 
     if action == "promo":
         if step == "promo_code":
