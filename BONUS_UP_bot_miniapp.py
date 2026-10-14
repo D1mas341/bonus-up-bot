@@ -746,9 +746,7 @@ async def adm_banneradd(call: CallbackQuery):
     admin_state[call.from_user.id] = {"action":"banner","step":"title","data":{}}
     await call.message.edit_text(
         "➕ НОВЫЙ БАННЕР В КАРУСЕЛЬ MINI APP\n\n"
-        "1/6. Название для админки (например, 1win BONUS UP):\n\n"
-        "На следующем шаге можно отправить сам баннер фотографией прямо в Telegram. "
-        "При нажатии на баннер пользователь перейдёт по указанной партнёрской ссылке."
+        "1/4. Название для админки (его видишь только ты):"
     )
     await call.answer()
 
@@ -814,8 +812,8 @@ async def admin_campaign_media(message: Message):
         await message.bot.download(file_id, destination=buffer)
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         state["data"]["image_url"] = f"data:{mime};base64," + encoded
-        state["step"] = "button_text"
-        await message.answer("4/6. Текст кнопки (например, «ЗАБРАТЬ БОНУС») или - без кнопки:")
+        state["step"] = "url"
+        await message.answer("3/4. Партнёрская ссылка (https://...), куда переходить при нажатии на баннер:")
         return
 
     if state.get("action") != "campaign" or state.get("step") != "media":
@@ -948,35 +946,18 @@ async def admin_text(message: Message):
         return
 
     if action == "banner":
-        fields = [
-            ("text", "2/6. Короткая подпись (необязательно, отправь - чтобы пропустить):"),
-            ("image_url", "3/6. Отправь изображение баннера отдельным сообщением как фото/файл JPG или PNG. Можно вместо этого прислать прямую HTTPS-ссылку на изображение."),
-            ("button_text", "4/6. Текст кнопки (например, «ЗАБРАТЬ БОНУС») или - без кнопки:"),
-            ("url", "5/6. Партнёрская ссылка, куда должен вести баннер (https://...):"),
-            ("position", "6/6. Позиция в карусели (число, например 1):"),
-        ]
         if step == "title":
             state["data"]["title"] = text
-            state["step"] = "text"
-            await message.answer(fields[0][1])
-            return
-        if step == "text":
-            state["data"]["text"] = "" if text == "-" else text
             state["step"] = "image_url"
-            await message.answer(fields[1][1])
+            await message.answer("2/4. Отправь баннер фотографией или файлом JPG/PNG. Можно также прислать прямую HTTPS-ссылку на изображение.")
             return
         if step == "image_url":
             if not text.startswith(("https://", "http://")):
-                await message.answer("Пришли баннер фотографией/файлом или вставь прямую ссылку http:// либо https:// на изображение.")
+                await message.answer("Отправь баннер фотографией/файлом JPG или PNG либо прямой ссылкой на изображение.")
                 return
             state["data"]["image_url"] = text
-            state["step"] = "button_text"
-            await message.answer(fields[2][1])
-            return
-        if step == "button_text":
-            state["data"]["button_text"] = "" if text == "-" else text[:64]
             state["step"] = "url"
-            await message.answer(fields[3][1])
+            await message.answer("3/4. Партнёрская ссылка (https://...), куда переходить при нажатии на баннер:")
             return
         if step == "url":
             if not text.startswith(("https://", "http://")):
@@ -984,7 +965,7 @@ async def admin_text(message: Message):
                 return
             state["data"]["url"] = text
             state["step"] = "position"
-            await message.answer(fields[4][1])
+            await message.answer("4/4. Позиция в карусели (число, например 1):")
             return
         if step == "position":
             try:
@@ -999,7 +980,7 @@ async def admin_text(message: Message):
                 return
             with closing(db()) as con:
                 con.execute("INSERT INTO banners(title,text,image_url,button_text,url,enabled,position) VALUES(?,?,?,?,?,1,?)",
-                            (d["title"],d.get("text",""),d["image_url"],d.get("button_text",""),d["url"],pos))
+                            (d["title"],"",d["image_url"],"",d["url"],pos))
                 con.commit()
             admin_state.pop(uid, None)
             await message.answer("✅ Баннер добавлен и включён в карусель Mini App. Нажатие на него ведёт по партнёрской ссылке. Открой Mini App заново для проверки.", reply_markup=admin_keyboard())
