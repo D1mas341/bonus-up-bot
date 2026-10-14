@@ -218,12 +218,12 @@ async def start(message: Message):
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
     text = (
-        "🎁 BONUS UP — БУКМЕКЕРЫ И КАЗИНО\\n\\n"
-        "🔥 Самые горячие бонусы в одном месте!\\n\\n"
-        "🎰 Бонусы казино и бесплатные вращения\\n"
-        "⚽ Бонусы на спорт и бесплатные ставки\\n"
-        "🎟️ Эксклюзивные промокоды\\n"
-        "💰 Выбирай предложение под себя!\\n\\n"
+        "🎁 BONUS UP — БУКМЕКЕРЫ И КАЗИНО\n\n"
+        "🔥 Самые горячие бонусы в одном месте!\n\n"
+        "🎰 Бонусы казино и бесплатные вращения\n"
+        "⚽ Бонусы на спорт и бесплатные ставки\n"
+        "🎟️ Эксклюзивные промокоды\n"
+        "💰 Выбирай предложение под себя!\n\n"
         "👇 Выбирай категорию и забирай свой бонус!"
     )
     kb = InlineKeyboardBuilder()
@@ -519,7 +519,7 @@ async def adm_users(call: CallbackQuery):
     with closing(db()) as con:
         total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-    await call.message.edit_text(f"👥 ПОЛЬЗОВАТЕЛИ\\n\\nВсего уникальных: {total}\\nНовых сегодня (UTC): {today}", reply_markup=admin_keyboard())
+    await call.message.edit_text(f"👥 ПОЛЬЗОВАТЕЛИ\n\nВсего уникальных: {total}\nНовых сегодня (UTC): {today}", reply_markup=admin_keyboard())
     await call.answer()
 
 
@@ -539,7 +539,7 @@ async def adm_campaigns(call: CallbackQuery):
     kb.button(text="➕ Создать публикацию", callback_data="adm:camp_add")
     kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
     kb.adjust(1)
-    await call.message.edit_text("\\n".join(lines), reply_markup=kb.as_markup())
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
 
 
@@ -549,7 +549,7 @@ async def adm_camp_add(call: CallbackQuery):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     admin_state[call.from_user.id] = {"action":"campaign","step":"title","data":{}}
-    await call.message.edit_text("📢 НОВАЯ ПУБЛИКАЦИЯ\\n\\n1/6. Название для админки:")
+    await call.message.edit_text("📢 НОВАЯ ПУБЛИКАЦИЯ\n\n1/6. Название для админки:")
     await call.answer()
 
 
@@ -654,7 +654,7 @@ async def adm_banners(call: CallbackQuery):
         kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{bid}", callback_data=f"adm:bannertoggle:{bid}")
     kb.button(text="⬅️ В админ-панель", callback_data="adm:home")
     kb.adjust(1)
-    await call.message.edit_text("\\n".join(lines), reply_markup=kb.as_markup())
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
 
 
