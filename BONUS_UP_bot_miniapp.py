@@ -86,6 +86,12 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
+        campaign_cols = [r[1] for r in con.execute("PRAGMA table_info(campaigns)").fetchall()]
+        if "interval_hours" not in campaign_cols:
+            con.execute("ALTER TABLE campaigns ADD COLUMN interval_hours INTEGER DEFAULT 8")
+        user_cols = [r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()]
+        if "last_campaign_id" not in user_cols:
+            con.execute("ALTER TABLE users ADD COLUMN last_campaign_id INTEGER DEFAULT 0")
         con.execute("""
         CREATE TABLE IF NOT EXISTS campaign_sends (
             campaign_id INTEGER NOT NULL,
