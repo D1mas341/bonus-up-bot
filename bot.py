@@ -1177,48 +1177,63 @@ async def campaign_scheduler(bot: Bot):
                 campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
                     FROM campaigns WHERE enabled=1 ORDER BY position,id""").fetchall()
                 users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
-            last_campaign_by_user = {int(user_id): int(last_id or 0) for user_id,last_id in users}
-            for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
-                due = not last_sent
-                if last_sent:
-                    try:
-                        stamp = datetime.fromisoformat(last_sent.replace("Z","+00:00"))
-                        due = (datetime.now(timezone.utc)-stamp).total_seconds() >= int(interval)*3600
-                    except Exception:
-                        due = True
-                if not due:
-                    continue
-                markup = None
-                if button_text and button_url:
-                    base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
-                    tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
-                    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
-                delivered = 0
-                for user_id,last_campaign_id in users:
-                    current_last = last_campaign_by_user.get(int(user_id), int(last_campaign_id or 0))
-                    if len(campaigns) > 1 and current_last == cid:
+                global_row = con.execute("SELECT value FROM app_settings WHERE key='last_campaign_broadcast'").fetchone()
+            global_last = global_row[0] if global_row else ""
+            global_due = True
+            if global_last:
+                try:
+                    stamp = datetime.fromisoformat(global_last.replace("Z","+00:00"))
+                    # Global throttle prevents several campaigns from blasting users one after another.
+                    global_due = (datetime.now(timezone.utc)-stamp).total_seconds() >= 8*3600
+                except Exception:
+                    global_due = True
+            if global_due:
+                last_campaign_by_user = {int(user_id): int(last_id or 0) for user_id,last_id in users}
+                for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
+                    due = not last_sent
+                    if last_sent:
+                        try:
+                            stamp = datetime.fromisoformat(last_sent.replace("Z","+00:00"))
+                            due = (datetime.now(timezone.utc)-stamp).total_seconds() >= int(interval)*3600
+                        except Exception:
+                            due = True
+                    if not due:
                         continue
-                    try:
-                        if media_type == "photo" and file_id:
-                            await bot.send_photo(user_id, file_id, caption=body[:1024], reply_markup=markup)
-                        elif media_type == "video" and file_id:
-                            await bot.send_video(user_id, file_id, caption=body[:1024], reply_markup=markup)
-                        else:
-                            await bot.send_message(user_id, body[:4096], reply_markup=markup)
-                        delivered += 1
-                        with closing(db()) as con:
-                            con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
-                            con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
-                            con.commit()
-                        last_campaign_by_user[int(user_id)] = int(cid)
-                    except Exception:
-                        # One blocked user or delivery error must not stop the broadcast.
-                        continue
-                    await asyncio.sleep(0.05)
-                with closing(db()) as con:
-                    con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
-                                (delivered,datetime.now(timezone.utc).isoformat(),cid))
-                    con.commit()
+                    markup = None
+                    if button_text and button_url:
+                        base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+                        tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
+                        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
+                    delivered = 0
+                    for user_id,last_campaign_id in users:
+                        if len(campaigns) > 1 and last_campaign_by_user.get(int(user_id), int(last_campaign_id or 0)) == cid:
+                            continue
+                        try:
+                            if media_type == "photo" and file_id:
+                                await bot.send_photo(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                            elif media_type == "video" and file_id:
+                                await bot.send_video(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                            else:
+                                await bot.send_message(user_id, body[:4096], reply_markup=markup)
+                            delivered += 1
+                            with closing(db()) as con:
+                                con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
+                                con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
+                                con.commit()
+                            last_campaign_by_user[int(user_id)] = int(cid)
+                        except Exception:
+                            # One blocked user or delivery error must not stop the broadcast.
+                            continue
+                        await asyncio.sleep(0.05)
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    with closing(db()) as con:
+                        con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
+                                    (delivered,now_iso,cid))
+                        con.execute("INSERT INTO app_settings(key,value) VALUES('last_campaign_broadcast',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                    (now_iso,))
+                        con.commit()
+                    # One campaign per 8-hour window; avoid a burst when several are enabled.
+                    break
         except Exception:
             pass
         await asyncio.sleep(60)
