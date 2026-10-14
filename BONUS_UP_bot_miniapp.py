@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import asyncio
+import base64
+from io import BytesIO
 from urllib.parse import urlparse
 from contextlib import closing
 
@@ -647,7 +649,7 @@ async def adm_promoon(call: CallbackQuery):
         return
     oid = int(call.data.split(":")[2])
     admin_state[call.from_user.id] = {"action":"promo","step":"promo_code","offer_id":oid,"data":{}}
-    await call.message.edit_text("🏷 Отправь промокод. Если убрать промокод — напиши -.")
+    await call.message.edit_text("🏷 НАСТРОЙКА ОФФЕРА\n\n1/2. Отправь промокод. Если убрать промокод — напиши -.\n\nПосле этого можно будет отправить логотип картинкой прямо сюда или вставить ссылку на изображение.")
     await call.answer()
 
 
@@ -698,7 +700,32 @@ async def adm_banneradd(call: CallbackQuery):
 async def admin_campaign_media(message: Message):
     uid = message.from_user.id
     state = admin_state.get(uid)
-    if not is_admin(uid) or not state or state.get("action") != "campaign" or state.get("step") != "media":
+    if not is_admin(uid) or not state:
+        return
+
+    # Offer logo upload: store the image as a data URL so Mini App can render it
+    # without relying on an external image host. Limit upload size to keep SQLite light.
+    if state.get("action") == "promo" and state.get("step") == "logo_url":
+        if not message.photo:
+            await message.answer("Пришли логотип как изображение (не видео) или отправь ссылку на картинку.")
+            return
+        photo = message.photo[-1]
+        if photo.file_size and photo.file_size > 1_500_000:
+            await message.answer("Изображение слишком большое. Отправь логотип размером до 1,5 МБ.")
+            return
+        buffer = BytesIO()
+        await message.bot.download(photo.file_id, destination=buffer)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        logo = "data:image/jpeg;base64," + encoded
+        with closing(db()) as con:
+            con.execute("UPDATE offers SET promo_code=?,logo_url=? WHERE id=?",
+                        (state["data"].get("promo_code",""), logo, state["offer_id"]))
+            con.commit()
+        admin_state.pop(uid, None)
+        await message.answer("✅ Промокод и логотип сохранены. Открой Mini App заново, чтобы проверить карточку.", reply_markup=admin_keyboard())
+        return
+
+    if state.get("action") != "campaign" or state.get("step") != "media":
         return
     if message.photo:
         state["data"]["media_type"] = "photo"
@@ -800,12 +827,12 @@ async def admin_text(message: Message):
         if step == "promo_code":
             state["data"]["promo_code"] = "" if text == "-" else text
             state["step"] = "logo_url"
-            await message.answer("Отправь HTTPS-ссылку на логотип. Если не нужен — напиши -.")
+            await message.answer("2/2. Отправь логотип КАРТИНКОЙ прямо в чат (лучше до 1,5 МБ) или пришли прямую HTTPS-ссылку на изображение. Чтобы убрать логотип, напиши -.")
             return
         if step == "logo_url":
             logo = "" if text == "-" else text
             if logo and not logo.startswith(("https://", "http://")):
-                await message.answer("Нужна ссылка на изображение http:// или https://, либо -")
+                await message.answer("Пришли логотип картинкой прямо в чат, прямой ссылкой HTTPS на изображение или - для удаления.")
                 return
             with closing(db()) as con:
                 con.execute("UPDATE offers SET promo_code=?,logo_url=? WHERE id=?",
