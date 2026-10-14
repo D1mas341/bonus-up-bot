@@ -6,7 +6,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -70,6 +70,37 @@ def init_db():
             if col not in cols:
                 con.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
         con.execute("""
+        CREATE TABLE IF NOT EXISTS campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            media_type TEXT DEFAULT '',
+            media_file_id TEXT DEFAULT '',
+            button_text TEXT DEFAULT '',
+            button_url TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            position INTEGER DEFAULT 0,
+            sent_count INTEGER DEFAULT 0,
+            click_count INTEGER DEFAULT 0,
+            last_sent_at TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS campaign_sends (
+            campaign_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(campaign_id,user_id)
+        )
+        """)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )
+        """)
+        con.execute("""
         CREATE TABLE IF NOT EXISTS banners (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL DEFAULT '',
@@ -111,15 +142,8 @@ def is_admin(user_id: int) -> bool:
 
 
 def main_keyboard():
-    kb = ReplyKeyboardBuilder()
-    kb.button(text="⚽ БУКМЕКЕРЫ")
-    kb.button(text="🎰 КАЗИНО")
-    if WEBAPP_URL:
-        kb.button(text="🎰 ЕЩЁ БОЛЬШЕ БОНУСОВ 🎰", web_app=WebAppInfo(url=WEBAPP_URL))
-        kb.adjust(2, 1)
-    else:
-        kb.adjust(2)
-    return kb.as_markup(resize_keyboard=True)
+    # No persistent reply keyboard; the Mini App is opened from the welcome message.
+    return None
 
 
 def offers_keyboard(category):
@@ -148,6 +172,8 @@ def admin_keyboard():
     kb.button(text="🖼 Баннеры Mini App", callback_data="adm:banners")
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
+    kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
+    kb.button(text="👥 Пользователи", callback_data="adm:users")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -184,12 +210,19 @@ async def start(message: Message):
     if message.text and " " in message.text:
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
-    await message.answer(
-        "🎁 BONUS UP\n\n"
-        "Актуальные предложения БК и онлайн-казино в одном месте.\n\n"
-        "Выберите раздел:",
-        reply_markup=main_keyboard()
+    text = (
+        "🎁 BONUS UP — БУКМЕКЕРЫ И КАЗИНО\\n\\n"
+        "🔥 Самые горячие бонусы в одном месте!\\n\\n"
+        "🎰 Бонусы казино и бесплатные вращения\\n"
+        "⚽ Бонусы на спорт и бесплатные ставки\\n"
+        "🎟️ Эксклюзивные промокоды\\n"
+        "💰 Выбирай предложение под себя!\\n\\n"
+        "👇 Выбирай категорию и забирай свой бонус!"
     )
+    kb = InlineKeyboardBuilder()
+    if WEBAPP_URL:
+        kb.button(text="🎁 Открыть BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
+    await message.answer(text, reply_markup=kb.as_markup() if WEBAPP_URL else None)
 
 
 @dp.message(Command("admin"))
@@ -841,7 +874,7 @@ MINI_APP_HTML = '''<!doctype html>
 </style></head>
 <body>
 <div class="wrap">
- <div class="header"><div><div class="logo">🎁 BONUS UP</div><div class="sub" data-i18n="subtitle">Бонусы и лучшие предложения</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">RU</option><option value="en">EN</option><option value="de">DE</option><option value="tr">TR</option><option value="hi">HI</option></select><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><a href="/terms" data-i18n="terms">Условия использования</a><a href="/privacy" data-i18n="privacy">Политика конфиденциальности</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
+ <div class="header"><div><div class="logo">🎁 BONUS UP</div><div class="sub" data-i18n="subtitle">Бонусы и лучшие предложения</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">RU</option><option value="en">EN</option><option value="de">DE</option><option value="tr">TR</option><option value="hi">HI</option></select><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><a href="/terms" data-i18n="terms">Условия использования</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
  <div class="tabs"><button class="tab active" data-cat="casino" data-i18n="games">🎰 ИГРЫ</button><button class="tab" data-cat="bets" data-i18n="sport">⚽ СПОРТ</button></div>
  <div class="banner" id="promoBanner"><h1>🔥 Лучшие бонусы в одном месте</h1><p>Выбирай предложение, смотри бонус и переходи к оператору.</p></div>
  <div id="bannerDots" style="display:flex;justify-content:center;gap:6px;margin:-12px 0 18px"></div>
@@ -960,7 +993,7 @@ async def go_banner(request):
     raise web.HTTPFound(row[0])
 
 async def terms_page(request):
-    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Переход по партнёрским ссылкам может приносить проекту вознаграждение. Только 18+.</p></body></html>", content_type="text/html")
+    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
 
 async def privacy_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Политика конфиденциальности</h1><p>Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.</p><p>После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.</p><p>Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram.</p></body></html>", content_type="text/html")
