@@ -6,7 +6,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -20,6 +20,7 @@ ADMIN_IDS = {
 }
 DB_PATH = os.getenv("DB_PATH", "bonus_up.db")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
+WELCOME_VIDEO_PATH = os.getenv("WELCOME_VIDEO_PATH", "")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set")
@@ -70,6 +71,43 @@ def init_db():
             if col not in cols:
                 con.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
         con.execute("""
+        CREATE TABLE IF NOT EXISTS campaigns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            media_type TEXT DEFAULT '',
+            media_file_id TEXT DEFAULT '',
+            button_text TEXT DEFAULT '',
+            button_url TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            position INTEGER DEFAULT 0,
+            sent_count INTEGER DEFAULT 0,
+            click_count INTEGER DEFAULT 0,
+            last_sent_at TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        campaign_cols = [r[1] for r in con.execute("PRAGMA table_info(campaigns)").fetchall()]
+        if "interval_hours" not in campaign_cols:
+            con.execute("ALTER TABLE campaigns ADD COLUMN interval_hours INTEGER DEFAULT 8")
+        user_cols = [r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()]
+        if "last_campaign_id" not in user_cols:
+            con.execute("ALTER TABLE users ADD COLUMN last_campaign_id INTEGER DEFAULT 0")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS campaign_sends (
+            campaign_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(campaign_id,user_id)
+        )
+        """)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT ''
+        )
+        """)
+        con.execute("""
         CREATE TABLE IF NOT EXISTS banners (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL DEFAULT '',
@@ -111,15 +149,8 @@ def is_admin(user_id: int) -> bool:
 
 
 def main_keyboard():
-    kb = ReplyKeyboardBuilder()
-    kb.button(text="⚽ БУКМЕКЕРЫ")
-    kb.button(text="🎰 КАЗИНО")
-    if WEBAPP_URL:
-        kb.button(text="🎰 ЕЩЁ БОЛЬШЕ БОНУСОВ 🎰", web_app=WebAppInfo(url=WEBAPP_URL))
-        kb.adjust(2, 1)
-    else:
-        kb.adjust(2)
-    return kb.as_markup(resize_keyboard=True)
+    # No persistent reply keyboard; the Mini App is opened from the welcome message.
+    return None
 
 
 def offers_keyboard(category):
@@ -148,6 +179,8 @@ def admin_keyboard():
     kb.button(text="🖼 Баннеры Mini App", callback_data="adm:banners")
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
+    kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
+    kb.button(text="👥 Пользователи", callback_data="adm:users")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -184,12 +217,23 @@ async def start(message: Message):
     if message.text and " " in message.text:
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
-    await message.answer(
-        "🎁 BONUS UP\n\n"
-        "Актуальные предложения БК и онлайн-казино в одном месте.\n\n"
-        "Выберите раздел:",
-        reply_markup=main_keyboard()
+    text = (
+        "🎁 BONUS UP — БУКМЕКЕРЫ И КАЗИНО\n\n"
+        "🔥 Самые горячие бонусы в одном месте!\n\n"
+        "🎰 Бонусы казино и бесплатные вращения\n"
+        "⚽ Бонусы на спорт и бесплатные ставки\n"
+        "🎟️ Эксклюзивные промокоды\n"
+        "💰 Выбирай предложение под себя!\n\n"
+        "👇 Выбирай категорию и забирай свой бонус!"
     )
+    kb = InlineKeyboardBuilder()
+    if WEBAPP_URL:
+        kb.button(text="🎁 Открыть BONUS UP", web_app=WebAppInfo(url=WEBAPP_URL))
+    markup = kb.as_markup() if WEBAPP_URL else None
+    if WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
+        await message.answer_video(FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup)
 
 
 @dp.message(Command("admin"))
@@ -466,6 +510,76 @@ async def adm_toggleone(call: CallbackQuery):
         await call.answer("Оффер не найден", show_alert=True)
 
 
+
+@dp.callback_query(F.data == "adm:users")
+async def adm_users(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        today = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
+    await call.message.edit_text(f"👥 ПОЛЬЗОВАТЕЛИ\n\nВсего уникальных: {total}\nНовых сегодня (UTC): {today}", reply_markup=admin_keyboard())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:campaigns")
+async def adm_campaigns(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        rows = con.execute("SELECT id,title,enabled,interval_hours,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
+    kb = InlineKeyboardBuilder()
+    lines = ["📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ", "", "Текст, фото/видео, CTA-кнопки и расписание."]
+    for cid,title,enabled,interval,sent,clicks in rows:
+        lines.append(f"{'🟢' if enabled else '🔴'} #{cid} {title or 'Без названия'} — каждые {interval} ч. | отправок {sent} | кликов {clicks}")
+        kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{cid}", callback_data=f"adm:camp_toggle:{cid}")
+        kb.button(text=f"🗑 Удалить #{cid}", callback_data=f"adm:camp_delete:{cid}")
+    kb.button(text="➕ Создать публикацию", callback_data="adm:camp_add")
+    kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
+    kb.adjust(1)
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:camp_add")
+async def adm_camp_add(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    admin_state[call.from_user.id] = {"action":"campaign","step":"title","data":{}}
+    await call.message.edit_text("📢 НОВАЯ ПУБЛИКАЦИЯ\n\n1/6. Название для админки:")
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:camp_toggle:"))
+async def adm_camp_toggle(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    cid = int(call.data.rsplit(":",1)[1])
+    with closing(db()) as con:
+        con.execute("UPDATE campaigns SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (cid,))
+        con.commit()
+    await call.answer("Статус изменён")
+    await adm_campaigns(call)
+
+
+@dp.callback_query(F.data.startswith("adm:camp_delete:"))
+async def adm_camp_delete(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    cid = int(call.data.rsplit(":",1)[1])
+    with closing(db()) as con:
+        con.execute("DELETE FROM campaign_sends WHERE campaign_id=?", (cid,))
+        con.execute("DELETE FROM campaigns WHERE id=?", (cid,))
+        con.commit()
+    await call.answer("Удалено")
+    await adm_campaigns(call)
+
+
 @dp.callback_query(F.data == "adm:clicks")
 async def adm_clicks(call: CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -540,7 +654,7 @@ async def adm_banners(call: CallbackQuery):
         kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{bid}", callback_data=f"adm:bannertoggle:{bid}")
     kb.button(text="⬅️ В админ-панель", callback_data="adm:home")
     kb.adjust(1)
-    await call.message.edit_text("\\n".join(lines), reply_markup=kb.as_markup())
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
 
 
@@ -567,6 +681,22 @@ async def adm_banneradd(call: CallbackQuery):
     await call.answer()
 
 
+@dp.message(F.photo | F.video)
+async def admin_campaign_media(message: Message):
+    uid = message.from_user.id
+    state = admin_state.get(uid)
+    if not is_admin(uid) or not state or state.get("action") != "campaign" or state.get("step") != "media":
+        return
+    if message.photo:
+        state["data"]["media_type"] = "photo"
+        state["data"]["media_file_id"] = message.photo[-1].file_id
+    else:
+        state["data"]["media_type"] = "video"
+        state["data"]["media_file_id"] = message.video.file_id
+    state["step"] = "button_text"
+    await message.answer("4/6. Текст кнопки или - без кнопки:")
+
+
 @dp.message()
 async def admin_text(message: Message):
     uid = message.from_user.id
@@ -582,6 +712,66 @@ async def admin_text(message: Message):
         admin_state.pop(uid, None)
         await message.answer("❌ Отменено.", reply_markup=admin_keyboard())
         return
+
+    if action == "campaign":
+        d = state["data"]
+        if step == "title":
+            d["title"] = text
+            state["step"] = "body"
+            await message.answer("2/6. Текст публикации:")
+            return
+        if step == "body":
+            d["body"] = "" if text == "-" else text
+            state["step"] = "media"
+            await message.answer("3/6. Пришли фото или видео отдельным сообщением. Для текста без медиа напиши -.")
+            return
+        if step == "media":
+            if text != "-":
+                await message.answer("Пришли фото/видео отдельным сообщением или напиши -.")
+                return
+            d["media_type"] = ""
+            d["media_file_id"] = ""
+            state["step"] = "button_text"
+            await message.answer("4/6. Текст кнопки или - без кнопки:")
+            return
+        if step == "button_text":
+            d["button_text"] = "" if text == "-" else text[:64]
+            if d["button_text"]:
+                state["step"] = "button_url"
+                await message.answer("5/6. Ссылка кнопки (https://...).")
+            else:
+                d["button_url"] = ""
+                state["step"] = "interval"
+                await message.answer("6/6. Интервал в часах: 8 = 3 раза в день, 12 = 2 раза в день.")
+            return
+        if step == "button_url":
+            if not text.startswith(("https://","http://")):
+                await message.answer("Нужна ссылка http:// или https://.")
+                return
+            d["button_url"] = text
+            state["step"] = "interval"
+            await message.answer("6/6. Интервал в часах: 8 = 3 раза в день, 12 = 2 раза в день.")
+            return
+        if step == "interval":
+            if not d.get("body") and not d.get("media_file_id"):
+                await message.answer("Нужен текст или медиа. Отправь текст на шаге 2 либо фото/видео на шаге 3.")
+                state["step"] = "body"
+                return
+            try:
+                interval = int(text)
+                if interval < 8 or interval > 24:
+                    raise ValueError
+            except ValueError:
+                await message.answer("Введи число от 8 до 24.")
+                return
+            with closing(db()) as con:
+                pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM campaigns").fetchone()[0]
+                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours) VALUES(?,?,?,?,?,?,0,?,?)",
+                    (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,interval))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Публикация сохранена и выключена. Включи её кнопкой в разделе «📢 Рекламные публикации», когда будешь готов.", reply_markup=admin_keyboard())
+            return
 
     if action == "promo":
         if step == "promo_code":
@@ -829,7 +1019,7 @@ MINI_APP_HTML = '''<!doctype html>
 :root{--bg:#090909;--card:#191919;--muted:#aaa397;--text:#fff9ec;--gold:#ffd21a;--gold2:#ffe58a;--line:#393021}
 *{box-sizing:border-box}html{background:var(--bg)}body{margin:0;background:radial-gradient(ellipse at 50% -10%,#38280b 0,transparent 45%),var(--bg);color:var(--text);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .wrap{max-width:760px;margin:auto;padding:calc(18px + env(safe-area-inset-top)) 15px calc(105px + env(safe-area-inset-bottom))}
-.header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:3px 0 22px}.logo{font-size:25px;font-weight:950;letter-spacing:1px}.sub{color:var(--muted);font-size:11px;margin-top:5px;letter-spacing:1px}.head-actions{display:flex;align-items:center;gap:7px}.profile{display:flex;align-items:center;gap:6px;min-width:0;max-width:145px}.avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#ffe58a,#d7a21c);color:#211700;display:flex;align-items:center;justify-content:center;overflow:hidden;font-weight:950;font-size:16px;flex:none;border:1px solid #6b531e}.avatar img{width:100%;height:100%;object-fit:cover}.profile-name{font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:85px}.lang-select{max-width:62px;background:#17140d;color:var(--gold2);border:1px solid #57451d;border-radius:10px;padding:9px 3px;font-weight:850;font-size:12px}.menu-wrap{position:relative}.menu-button{width:36px;height:38px;border:1px solid #49391b;border-radius:12px;background:#17140d;color:var(--text);font-size:23px;font-weight:900}.top-menu{display:none;position:absolute;right:0;top:44px;width:220px;padding:7px;background:#1b1b1b;border:1px solid #4b402b;border-radius:15px;box-shadow:0 12px 40px #000c;z-index:40}.top-menu.open{display:block}.top-menu a{display:block;padding:12px 10px;color:var(--text);text-decoration:none;font-size:13px;border-radius:9px}.top-menu a:active{background:#332914}@media(max-width:390px){.profile-name{display:none}.head-actions{gap:5px}.lang-select{max-width:55px}}
+.header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:3px 0 22px}.logo{font-size:21px;font-weight:950;letter-spacing:.6px;color:var(--gold2);text-shadow:0 1px 0 #5d420b,0 0 12px #d7a21d22}.sub{color:var(--muted);font-size:11px;margin-top:5px;letter-spacing:1px}.head-actions{display:flex;align-items:center;gap:7px}.profile{display:flex;align-items:center;gap:6px;min-width:0;max-width:145px}.avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#ffe58a,#d7a21c);color:#211700;display:flex;align-items:center;justify-content:center;overflow:hidden;font-weight:950;font-size:16px;flex:none;border:1px solid #6b531e}.avatar img{width:100%;height:100%;object-fit:cover}.profile-name{font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:85px}.lang-select{max-width:62px;background:#17140d;color:var(--gold2);border:1px solid #57451d;border-radius:10px;padding:9px 3px;font-weight:850;font-size:12px}.menu-wrap{position:relative}.menu-button{width:36px;height:38px;border:1px solid #49391b;border-radius:12px;background:#17140d;color:var(--text);font-size:23px;font-weight:900}.top-menu{display:none;position:absolute;right:0;top:44px;width:220px;padding:7px;background:#1b1b1b;border:1px solid #4b402b;border-radius:15px;box-shadow:0 12px 40px #000c;z-index:40}.top-menu.open{display:block}.top-menu a{display:block;padding:12px 10px;color:var(--text);text-decoration:none;font-size:13px;border-radius:9px}.top-menu a:active{background:#332914}@media(max-width:390px){.profile-name{display:none}.head-actions{gap:5px}.lang-select{max-width:55px}}
 .tabs{display:flex;gap:8px;background:#12110fee;padding:7px;border:1px solid #4b3a18;border-radius:18px;position:fixed;bottom:calc(8px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);width:calc(100% - 30px);max-width:690px;z-index:20;box-shadow:0 8px 30px #000b;backdrop-filter:blur(18px)}.tab{flex:1;border:0;background:transparent;color:#c8c1b4;padding:13px 8px;border-radius:12px;font-size:13px;font-weight:900;letter-spacing:.4px}.tab.active{background:linear-gradient(115deg,#ffe58a,#d7a21c);color:#181100;box-shadow:0 4px 14px #dca71925}
 .banner{position:relative;overflow:hidden;margin:18px 0 22px;border-radius:23px;padding:0;background:#111;border:1px solid #5b4518;box-shadow:0 12px 30px #0008;cursor:pointer}.banner-image-link{display:block;width:100%;line-height:0}.banner-image-link img{display:block;width:100%;height:auto;max-height:420px;object-fit:contain}.banner h1,.banner p,.banner .go{display:none}
 .section{font-size:22px;font-weight:950;letter-spacing:-.4px;margin:24px 4px 13px}
@@ -841,12 +1031,12 @@ MINI_APP_HTML = '''<!doctype html>
 </style></head>
 <body>
 <div class="wrap">
- <div class="header"><div><div class="logo">🎁 BONUS UP</div><div class="sub" data-i18n="subtitle">Бонусы и лучшие предложения</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">RU</option><option value="en">EN</option><option value="de">DE</option><option value="tr">TR</option><option value="hi">HI</option></select><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><a href="/terms" data-i18n="terms">Условия использования</a><a href="/privacy" data-i18n="privacy">Политика конфиденциальности</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
+ <div class="header"><div><div class="logo">♛ BONUS UP ↗</div><div class="sub" data-i18n="subtitle">Лучшие бонусы и промокоды в одном месте!</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">RU</option><option value="en">EN</option><option value="de">DE</option><option value="tr">TR</option><option value="hi">HI</option></select><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><a href="/terms" data-i18n="terms">Условия использования</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
  <div class="tabs"><button class="tab active" data-cat="casino" data-i18n="games">🎰 ИГРЫ</button><button class="tab" data-cat="bets" data-i18n="sport">⚽ СПОРТ</button></div>
  <div class="banner" id="promoBanner"><h1>🔥 Лучшие бонусы в одном месте</h1><p>Выбирай предложение, смотри бонус и переходи к оператору.</p></div>
  <div id="bannerDots" style="display:flex;justify-content:center;gap:6px;margin:-12px 0 18px"></div>
  <div class="section" id="sectionTitle">🎰 Игры</div><div id="offers"><div class="empty">Загрузка предложений…</div></div>
- <div class="note">BONUS UP — каталог партнёрских предложений.<br><span style="display:inline-block;border:2px solid #e74b4b;color:#ff7777;border-radius:6px;padding:3px 8px;margin:9px 0;font-weight:900">18+</span><br>Азартные игры связаны с риском финансовых потерь. Играйте ответственно и только в пределах своих возможностей. Если азарт выходит из-под контроля, обратитесь за профессиональной помощью.<br><br><a href="/terms" style="color:#d7b64e;margin:0 8px" data-i18n="terms">Условия использования</a><a href="/privacy" style="color:#d7b64e;margin:0 8px" data-i18n="privacy">Политика конфиденциальности</a></div>
+ <div class="note"><span style="display:inline-block;border:2px solid #e74b4b;color:#ff7777;border-radius:6px;padding:3px 8px;margin:9px 0;font-weight:900">18+</span><br>Азартные игры связаны с риском финансовых потерь. Играйте ответственно и только в пределах своих возможностей. Если азарт выходит из-под контроля, обратитесь за профессиональной помощью.<br><br><a href="/terms" style="color:#d7b64e;margin:0 8px" data-i18n="terms">Условия использования</a></div>
 </div>
 <div class="modal-backdrop" id="modalBackdrop" role="dialog" aria-modal="true" aria-label="Информация о предложении"><div class="modal" id="modalContent"></div></div>
 <script>
@@ -959,14 +1149,108 @@ async def go_banner(request):
         raise web.HTTPNotFound()
     raise web.HTTPFound(row[0])
 
+async def go_campaign(request):
+    try:
+        campaign_id = int(request.match_info["campaign_id"])
+    except (TypeError, ValueError):
+        raise web.HTTPNotFound()
+    with closing(db()) as con:
+        row = con.execute("SELECT button_url FROM campaigns WHERE id=? AND enabled=1", (campaign_id,)).fetchone()
+        if row and row[0].startswith(("https://", "http://")):
+            con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
+            con.commit()
+    if not row or not row[0].startswith(("https://", "http://")):
+        raise web.HTTPNotFound()
+    raise web.HTTPFound(row[0])
+
+
 async def terms_page(request):
-    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Переход по партнёрским ссылкам может приносить проекту вознаграждение. Только 18+.</p></body></html>", content_type="text/html")
+    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
 
 async def privacy_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Политика конфиденциальности</h1><p>Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.</p><p>После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.</p><p>Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram.</p></body></html>", content_type="text/html")
 
 async def health(request):
     return web.Response(text="ok")
+
+async def campaign_scheduler(bot: Bot):
+    from datetime import datetime, timezone
+    while True:
+        try:
+            with closing(db()) as con:
+                campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
+                    FROM campaigns WHERE enabled=1 ORDER BY position,id""").fetchall()
+                users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
+                global_row = con.execute("SELECT value FROM app_settings WHERE key='last_campaign_broadcast'").fetchone()
+            global_last = global_row[0] if global_row else ""
+            global_due = True
+            if global_last:
+                try:
+                    stamp = datetime.fromisoformat(global_last.replace("Z","+00:00"))
+                    # Global throttle prevents several campaigns from blasting users one after another.
+                    global_due = (datetime.now(timezone.utc)-stamp).total_seconds() >= 8*3600
+                except Exception:
+                    global_due = True
+            if global_due:
+                last_campaign_by_user = {int(user_id): int(last_id or 0) for user_id,last_id in users}
+                for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
+                    due = not last_sent
+                    if last_sent:
+                        try:
+                            stamp = datetime.fromisoformat(last_sent.replace("Z","+00:00"))
+                            due = (datetime.now(timezone.utc)-stamp).total_seconds() >= int(interval)*3600
+                        except Exception:
+                            due = True
+                    if not due:
+                        continue
+                    # If every recorded user received this same campaign last time,
+                    # skip it without advancing the schedule; try another due campaign.
+                    if len(campaigns) > 1 and users and all(
+                        last_campaign_by_user.get(int(user_id), int(last_id or 0)) == cid
+                        for user_id, last_id in users
+                    ):
+                        continue
+                    markup = None
+                    if button_text and button_url:
+                        base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+                        tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
+                        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
+                    delivered = 0
+                    for user_id,last_campaign_id in users:
+                        if len(campaigns) > 1 and last_campaign_by_user.get(int(user_id), int(last_campaign_id or 0)) == cid:
+                            continue
+                        try:
+                            if media_type == "photo" and file_id:
+                                await bot.send_photo(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                            elif media_type == "video" and file_id:
+                                await bot.send_video(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                            else:
+                                await bot.send_message(user_id, body[:4096], reply_markup=markup)
+                            delivered += 1
+                            with closing(db()) as con:
+                                con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
+                                con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
+                                con.commit()
+                            last_campaign_by_user[int(user_id)] = int(cid)
+                        except Exception:
+                            # One blocked user or delivery error must not stop the broadcast.
+                            continue
+                        await asyncio.sleep(0.05)
+                    # Do not consume a campaign's schedule if nobody received it.
+                    if delivered:
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        with closing(db()) as con:
+                            con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
+                                        (delivered,now_iso,cid))
+                            con.execute("INSERT INTO app_settings(key,value) VALUES('last_campaign_broadcast',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                        (now_iso,))
+                            con.commit()
+                        # One campaign per 8-hour window; avoid a burst when several are enabled.
+                        break
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
 
 async def main():
     init_db()
@@ -978,6 +1262,7 @@ async def main():
     app.router.add_get("/api/banners", api_banners)
     app.router.add_get("/go/{offer_id}", go_offer)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
+    app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)
@@ -986,7 +1271,11 @@ async def main():
     port = int(os.getenv("PORT", "8080"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    await dp.start_polling(bot)
+    scheduler_task = asyncio.create_task(campaign_scheduler(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler_task.cancel()
 
 
 if __name__ == "__main__":
