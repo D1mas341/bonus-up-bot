@@ -1177,6 +1177,7 @@ async def campaign_scheduler(bot: Bot):
                 campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
                     FROM campaigns WHERE enabled=1 ORDER BY position,id""").fetchall()
                 users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
+            last_campaign_by_user = {int(user_id): int(last_id or 0) for user_id,last_id in users}
             for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
                 due = not last_sent
                 if last_sent:
@@ -1194,7 +1195,8 @@ async def campaign_scheduler(bot: Bot):
                     markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
                 delivered = 0
                 for user_id,last_campaign_id in users:
-                    if len(campaigns) > 1 and last_campaign_id == cid:
+                    current_last = last_campaign_by_user.get(int(user_id), int(last_campaign_id or 0))
+                    if len(campaigns) > 1 and current_last == cid:
                         continue
                     try:
                         if media_type == "photo" and file_id:
@@ -1208,6 +1210,7 @@ async def campaign_scheduler(bot: Bot):
                             con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
                             con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
                             con.commit()
+                        last_campaign_by_user[int(user_id)] = int(cid)
                     except Exception:
                         # One blocked user or delivery error must not stop the broadcast.
                         continue
