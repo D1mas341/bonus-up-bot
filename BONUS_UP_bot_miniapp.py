@@ -1140,6 +1140,21 @@ async def go_banner(request):
         raise web.HTTPNotFound()
     raise web.HTTPFound(row[0])
 
+async def go_campaign(request):
+    try:
+        campaign_id = int(request.match_info["campaign_id"])
+    except (TypeError, ValueError):
+        raise web.HTTPNotFound()
+    with closing(db()) as con:
+        row = con.execute("SELECT button_url FROM campaigns WHERE id=? AND enabled=1", (campaign_id,)).fetchone()
+        if row and row[0].startswith(("https://", "http://")):
+            con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
+            con.commit()
+    if not row or not row[0].startswith(("https://", "http://")):
+        raise web.HTTPNotFound()
+    raise web.HTTPFound(row[0])
+
+
 async def terms_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
 
@@ -1169,7 +1184,9 @@ async def campaign_scheduler(bot: Bot):
                     continue
                 markup = None
                 if button_text and button_url:
-                    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=button_url)]])
+                    base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+                    tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
+                    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
                 delivered = 0
                 for user_id,last_campaign_id in users:
                     if len(campaigns) > 1 and last_campaign_id == cid:
@@ -1209,6 +1226,7 @@ async def main():
     app.router.add_get("/api/banners", api_banners)
     app.router.add_get("/go/{offer_id}", go_offer)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
+    app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)
