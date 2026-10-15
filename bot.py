@@ -719,9 +719,12 @@ async def adm_banners(call: CallbackQuery):
     if not rows:
         lines.append("Баннеров пока нет.")
     for bid,title,enabled,pos,clicks in rows:
-        lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {title or 'Без заголовка'} | позиция {pos} | переходы {clicks}")
-        kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{bid}", callback_data=f"adm:bannertoggle:{bid}")
-        kb.button(text=f"🗑 Удалить #{bid}", callback_data=f"adm:bannerdelete:{bid}")
+        banner_title = (title or "Без названия").strip()
+        short_title = banner_title[:23] + ("…" if len(banner_title) > 23 else "")
+        lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {banner_title} | позиция {pos} | переходы {clicks}")
+        kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'}: {short_title}", callback_data=f"adm:bannertoggle:{bid}")
+        kb.button(text=f"✏️ Изменить: {short_title}", callback_data=f"adm:banneredit:{bid}")
+        kb.button(text=f"🗑 Удалить: {short_title}", callback_data=f"adm:bannerdelete:{bid}")
     kb.button(text="➕ Добавить баннер в карусель", callback_data="adm:banneradd")
     kb.button(text="⬅️ В админ-панель", callback_data="adm:home")
     kb.adjust(1)
@@ -740,6 +743,63 @@ async def adm_bannertoggle(call: CallbackQuery):
         con.commit()
     await call.answer("Статус баннера обновлён")
     await adm_banners(call)
+
+
+@dp.callback_query(F.data.startswith("adm:banneredit:"))
+async def adm_banneredit(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    bid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
+    if not row:
+        await call.answer("Баннер не найден.", show_alert=True)
+        return
+    title = row[0] or "Без названия"
+    kb = InlineKeyboardBuilder()
+    for field,label in [
+        ("title","✏️ Название"),
+        ("image_url","🖼 Изображение"),
+        ("url","🔗 Партнёрская ссылка"),
+        ("position","↕️ Позиция в карусели"),
+    ]:
+        kb.button(text=label, callback_data=f"adm:bannereditfield:{bid}:{field}")
+    kb.button(text="⬅️ К списку баннеров", callback_data="adm:banners")
+    kb.adjust(1)
+    await call.message.edit_text(
+        f"✏️ ИЗМЕНЕНИЕ БАННЕРА\n\n«{title}»\nВыбери, что изменить:",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:bannereditfield:"))
+async def adm_bannereditfield(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    parts = call.data.split(":")
+    bid, field = int(parts[2]), parts[3]
+    prompts = {
+        "title": "Отправь новое название баннера (только для админки):",
+        "image_url": "Отправь новое изображение баннера фото/файлом JPG/PNG или прямую HTTPS-ссылку. Текущее изображение заменится.",
+        "url": "Отправь новую партнёрскую ссылку (https://...).",
+        "position": "Отправь новую позицию баннера в карусели (целое число, начиная с 1).",
+    }
+    if field not in prompts:
+        await call.answer("Неизвестное поле.", show_alert=True)
+        return
+    with closing(db()) as con:
+        exists = con.execute("SELECT 1 FROM banners WHERE id=?", (bid,)).fetchone()
+    if not exists:
+        await call.answer("Баннер не найден.", show_alert=True)
+        return
+    admin_state[call.from_user.id] = {"action":"banner_edit","step":field,"banner_id":bid,"data":{}}
+    kb = InlineKeyboardBuilder()
+    kb.button(text="↩️ Отмена", callback_data="adm:banners")
+    await call.message.edit_text("✏️ ИЗМЕНЕНИЕ БАННЕРА\n\n" + prompts[field] + "\n\nДля отмены напиши «отмена».", reply_markup=kb.as_markup())
+    await call.answer()
 
 
 @dp.callback_query(F.data.startswith("adm:bannerdelete:"))
@@ -831,6 +891,37 @@ async def admin_campaign_media(message: Message):
         oid = state["offer_id"]
         admin_state.pop(uid, None)
         await message.answer("✅ Логотип сохранён. Промокод не менялся. Открой Mini App заново, чтобы проверить карточку.", reply_markup=admin_keyboard())
+        return
+
+    # Editing an existing carousel banner image.
+    if state.get("action") == "banner_edit" and state.get("step") == "image_url":
+        if message.photo:
+            file_id = message.photo[-1].file_id
+            mime = "image/jpeg"
+            size = message.photo[-1].file_size or 0
+        elif message.document and (message.document.mime_type or "").startswith("image/"):
+            file_id = message.document.file_id
+            mime = message.document.mime_type or "image/jpeg"
+            size = message.document.file_size or 0
+        elif message.video:
+            await message.answer("Для карусели нужно изображение, не видео. Отправь JPG/PNG.")
+            return
+        else:
+            await message.answer("Отправь баннер как фото или файл JPG/PNG.")
+            return
+        if size > 1_800_000:
+            await message.answer("Баннер слишком большой. Отправь изображение до 1,8 МБ.")
+            return
+        buffer = BytesIO()
+        await message.bot.download(file_id, destination=buffer)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        image_url = f"data:{mime};base64," + encoded
+        bid = state["banner_id"]
+        with closing(db()) as con:
+            con.execute("UPDATE banners SET image_url=? WHERE id=?", (image_url, bid))
+            con.commit()
+        admin_state.pop(uid, None)
+        await message.answer("✅ Изображение баннера обновлено.", reply_markup=admin_keyboard())
         return
 
     # Carousel banner upload: accept Telegram photos or image documents directly.
@@ -988,6 +1079,63 @@ async def admin_text(message: Message):
         state["step"] = "logo_url"
         await message.answer("2/2. Теперь отправь логотип картинкой/файлом или прямой HTTPS-ссылкой. Чтобы оставить логотип без изменений, отправь «отмена».")
         return
+
+    if action == "banner_edit":
+        bid = state["banner_id"]
+        if step == "title":
+            if not text:
+                await message.answer("Название не может быть пустым. Отправь новое название.")
+                return
+            with closing(db()) as con:
+                con.execute("UPDATE banners SET title=? WHERE id=?", (text[:120], bid))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Название баннера обновлено.", reply_markup=admin_keyboard())
+            return
+        if step == "image_url":
+            if not text.startswith(("https://", "http://")):
+                await message.answer("Отправь прямую ссылку http:// или https:// на изображение либо загрузи фото/файл JPG/PNG.")
+                return
+            with closing(db()) as con:
+                con.execute("UPDATE banners SET image_url=? WHERE id=?", (text, bid))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Изображение баннера обновлено.", reply_markup=admin_keyboard())
+            return
+        if step == "url":
+            if not text.startswith(("https://", "http://")):
+                await message.answer("Нужна партнёрская ссылка http:// или https://.")
+                return
+            with closing(db()) as con:
+                con.execute("UPDATE banners SET url=? WHERE id=?", (text, bid))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Партнёрская ссылка баннера обновлена.", reply_markup=admin_keyboard())
+            return
+        if step == "position":
+            try:
+                pos = int(text)
+                if pos < 1:
+                    raise ValueError
+            except ValueError:
+                await message.answer("Позиция должна быть целым числом от 1.")
+                return
+            with closing(db()) as con:
+                current = con.execute("SELECT position FROM banners WHERE id=?", (bid,)).fetchone()
+                if not current:
+                    admin_state.pop(uid, None)
+                    await message.answer("Баннер не найден.")
+                    return
+                old_pos = current[0]
+                if pos < old_pos:
+                    con.execute("UPDATE banners SET position=position+1 WHERE position>=? AND position<? AND id<>?", (pos, old_pos, bid))
+                elif pos > old_pos:
+                    con.execute("UPDATE banners SET position=position-1 WHERE position>? AND position<=? AND id<>?", (old_pos, pos, bid))
+                con.execute("UPDATE banners SET position=? WHERE id=?", (pos, bid))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Позиция баннера обновлена.", reply_markup=admin_keyboard())
+            return
 
     if action == "banner":
         if step == "title":
