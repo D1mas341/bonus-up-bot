@@ -126,35 +126,8 @@ def init_db():
         if "clicks" not in banner_cols:
             con.execute("ALTER TABLE banners ADD COLUMN clicks INTEGER DEFAULT 0")
 
-        # Replace the existing 1win carousel slide instead of appending a second slide.
-        prepared_banner_url = "https://raw.githubusercontent.com/D1mas341/bonus-up-bot/main/assets/bonus-up-1win-carousel.svg"
-        existing_1win = con.execute(
-            """SELECT id FROM banners
-               WHERE lower(title || ' ' || text) LIKE '%1win%'
-               ORDER BY position,id LIMIT 1"""
-        ).fetchone()
-        if existing_1win:
-            con.execute(
-                "UPDATE banners SET title=?, text='', image_url=?, enabled=1 WHERE id=?",
-                ("1win BONUS UP", prepared_banner_url, existing_1win[0]),
-            )
-            # Remove only the duplicate seed created by the previous release, if present.
-            con.execute(
-                "DELETE FROM banners WHERE title=? AND id<>?",
-                ("1win BONUS UP", existing_1win[0]),
-            )
-        else:
-            con.execute(
-                """INSERT INTO banners(title,text,image_url,button_text,url,enabled,position)
-                   VALUES(?,?,?,?,?,1,1)""",
-                (
-                    "1win BONUS UP",
-                    "",
-                    prepared_banner_url,
-                    "",
-                    "https://r1wrokkc.life/?p=adlj",
-                ),
-            )
+        # Banner records are managed only through the admin panel.
+        # Do not auto-create or re-enable 1win on startup.
         con.commit()
 
 
@@ -748,6 +721,7 @@ async def adm_banners(call: CallbackQuery):
     for bid,title,enabled,pos,clicks in rows:
         lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {title or 'Без заголовка'} | позиция {pos} | переходы {clicks}")
         kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{bid}", callback_data=f"adm:bannertoggle:{bid}")
+        kb.button(text=f"🗑 Удалить #{bid}", callback_data=f"adm:bannerdelete:{bid}")
     kb.button(text="➕ Добавить баннер в карусель", callback_data="adm:banneradd")
     kb.button(text="⬅️ В админ-панель", callback_data="adm:home")
     kb.adjust(1)
@@ -765,6 +739,46 @@ async def adm_bannertoggle(call: CallbackQuery):
         con.execute("UPDATE banners SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (bid,))
         con.commit()
     await call.answer("Статус баннера обновлён")
+    await adm_banners(call)
+
+
+@dp.callback_query(F.data.startswith("adm:bannerdelete:"))
+async def adm_bannerdelete(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    bid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
+    if not row:
+        await call.answer("Баннер уже удалён или не найден.", show_alert=True)
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Да, удалить", callback_data=f"adm:bannerdeleteconfirm:{bid}")
+    kb.button(text="↩️ Отмена", callback_data="adm:banners")
+    kb.adjust(1)
+    await call.message.edit_text(
+        f"Удалить баннер #{bid} «{row[0] or 'Без заголовка'}» навсегда?\n\n"
+        "Это удалит только баннер, не офферы и не промокоды.",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:bannerdeleteconfirm:"))
+async def adm_bannerdeleteconfirm(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    bid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
+        con.execute("DELETE FROM banners WHERE id=?", (bid,))
+        con.commit()
+    if not row:
+        await call.answer("Баннер уже удалён или не найден.", show_alert=True)
+        return
+    await call.answer("Баннер удалён")
     await adm_banners(call)
 
 
