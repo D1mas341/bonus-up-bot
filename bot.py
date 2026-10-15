@@ -1257,7 +1257,7 @@ const cp=document.getElementById("modalCopy");if(cp)cp.onclick=()=>copyPromo(x.p
 function closeModal(){document.getElementById("modalBackdrop").classList.remove("open");document.body.style.overflow="";selectedId=null}
 document.getElementById("modalBackdrop").addEventListener("click",e=>{if(e.target.id==="modalBackdrop")closeModal()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
 async function copyPromo(v){try{if(navigator.clipboard&&navigator.clipboard.writeText)await navigator.clipboard.writeText(v);else{const el=document.createElement("textarea");el.value=v;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove()}if(tg&&tg.showPopup)tg.showPopup({title:t("copiedTitle"),message:t("copied"),buttons:[{type:"ok"}]})}catch(e){if(tg&&tg.showAlert)tg.showAlert(t("copyFailed")+v)}}
-async function load(){try{const r=await fetch("/api/offers",{cache:"no-store"});all=await r.json();const br=await fetch("/api/banners",{cache:"no-store"});const banners=br.ok?await br.json():[];renderBanners(banners);render("casino")}catch(e){document.getElementById("offers").innerHTML=\'<div class="empty">Не удалось загрузить предложения.</div>\'}}
+async function load(){try{const r=await fetch("/api/offers?v="+Date.now(),{cache:"no-store"});all=await r.json();const br=await fetch("/api/banners?v="+Date.now(),{cache:"no-store"});const banners=br.ok?await br.json():[];renderBanners(banners);render("casino")}catch(e){document.getElementById("offers").innerHTML=\'<div class="empty">Не удалось загрузить предложения.</div>\'}}
 function renderBanners(items){const box=document.getElementById("promoBanner"),dots=document.getElementById("bannerDots");if(!items.length){dots.innerHTML="";box.style.display="none";return}box.style.display="block";let idx=0;function show(){const b=items[idx];box.innerHTML='<a class="banner-image-link" href="/go/banner/'+Number(b.id)+'" aria-label="Открыть предложение"><img class="banner-backdrop" src="'+esc(b.image_url||"") +'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"") +'" alt="" loading="lazy"></a>';dots.innerHTML=items.map((b,i)=>'<button aria-label="Баннер '+(i+1)+'" data-index="'+i+'" style="width:'+(i===idx?20:6)+'px;height:6px;padding:0;border:0;border-radius:8px;background:'+(i===idx?'#f4c542':'#554a30')+'"></button>').join("");dots.querySelectorAll("button").forEach(btn=>btn.onclick=()=>{idx=Number(btn.dataset.index);show()})}let sx=0;box.ontouchstart=e=>sx=e.touches[0].clientX;box.ontouchend=e=>{const dx=e.changedTouches[0].clientX-sx;if(Math.abs(dx)>45){idx=(idx+(dx<0?1:-1)+items.length)%items.length;show()}};show()}
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");render(b.dataset.cat)});load();document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")load()});
 </script></body></html>'''
@@ -1282,7 +1282,7 @@ async def api_offers(request):
         {"id":r[0],"category":r[1],"name":r[2],"description":r[3],"bonus":r[4],
          "url":r[5],"promo":r[6] or "", "logo_url":r[7] or ""}
         for r in rows
-    ], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    ], headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache", "Expires": "0"})
 
 async def api_banners(request):
     with closing(db()) as con:
@@ -1291,7 +1291,7 @@ async def api_banners(request):
             FROM banners WHERE enabled=1
             ORDER BY CASE WHEN position<=0 THEN 2147483647 ELSE position END, id
         """).fetchall()
-    return web.json_response([{"id":r[0],"title":r[1],"text":r[2],"image_url":r[3],"button_text":r[4],"url":r[5]} for r in rows], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+    return web.json_response([{"id":r[0],"title":r[1],"text":r[2],"image_url":r[3],"button_text":r[4],"url":r[5]} for r in rows], headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache", "Expires": "0"})
 
 def is_partner_url(value):
     try:
