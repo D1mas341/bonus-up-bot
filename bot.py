@@ -232,26 +232,25 @@ async def start(message: Message):
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
 
-    # Clear any old persistent Telegram reply keyboard still cached by the client.
+    # One polished welcome card: media, concise caption and a single Mini App CTA.
     text = (
-        "🎁 BONUS UP — БУКМЕКЕРЫ И КАЗИНО\n\n"
-        "🔥 Открой для себя самые горячие бонусы!\n"
-        "🎰 Бонусы казино и бесплатные вращения\n"
-        "⚽ Спортивные бонусы и бесплатные ставки\n"
-        "🎟️ Эксклюзивные промокоды\n"
-        "💰 Найди свой следующий бонус!\n\n"
-        "👇 Выбирай категорию и забирай свой бонус!"
+        "🎁 BONUS UP — БОНУСЫ БУКМЕКЕРОВ И КАЗИНО\n\n"
+        "🏆 Акции и промокоды в одном месте\n"
+        "⚽ Спортивные предложения\n"
+        "🎰 Бонусы казино и Free Spins\n\n"
+        "👇 Выбирай бонус и открывай каталог!"
     )
     if WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
         await message.answer_video(
             FSInputFile(WELCOME_VIDEO_PATH),
-            reply_markup=ReplyKeyboardRemove()
+            caption=text,
+            reply_markup=mini_app_keyboard()
         )
-        await message.answer(text, reply_markup=mini_app_keyboard())
     else:
-        await message.answer(text, reply_markup=ReplyKeyboardRemove())
-        if WEBAPP_URL:
-            await message.answer("👇 Открой каталог бонусов:", reply_markup=mini_app_keyboard())
+        await message.answer(
+            text,
+            reply_markup=mini_app_keyboard() or ReplyKeyboardRemove()
+        )
 
 
 @dp.message(Command("admin"))
