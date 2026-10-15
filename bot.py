@@ -244,8 +244,7 @@ async def start(message: Message):
         await message.answer_video(
             FSInputFile(WELCOME_VIDEO_PATH),
             caption=text,
-            reply_markup=mini_app_keyboard(),
-            reply_markup_remove=ReplyKeyboardRemove()
+            reply_markup=mini_app_keyboard()
         )
     else:
         await message.answer(
