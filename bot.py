@@ -225,6 +225,24 @@ async def send_admin(message: Message):
     )
 
 
+WELCOME_DESCRIPTION = (
+    "🏆 Что умеет этот бот?\n\n"
+    "Бонусы букмекеров и онлайн-казино в одном месте!\n\n"
+    "🏆 Эксклюзивные бонусы и промокоды\n"
+    "🎰 Бонусы казино и бесплатные вращения\n"
+    "⚽ Спортивные бонусы и бесплатные ставки\n"
+    "🎟️ Актуальные акции и предложения\n\n"
+    "👇 Нажми «🚀 СТАРТ» и получи доступ ко всем бонусам!"
+)
+
+
+def welcome_start_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🚀 СТАРТ", callback_data="welcome:continue")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 @dp.message(CommandStart())
 async def start(message: Message):
     payload = ""
@@ -232,15 +250,6 @@ async def start(message: Message):
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
 
-    # Two synchronized MP4 clips are sent as one Telegram album. The
-    # descriptive text and CTA are sent immediately below because Telegram
-    # albums do not support inline keyboards.
-    text = (
-        "🔥 Fresh bonuses & promo codes\n"
-        "🎰 Free Spins and casino offers\n"
-        "⚽ Sportsbook deals in one place\n\n"
-        "👇 Find your offer and claim your bonus!"
-    )
     with closing(db()) as con:
         settings = dict(con.execute(
             "SELECT key,value FROM app_settings WHERE key IN "
@@ -249,30 +258,70 @@ async def start(message: Message):
         ).fetchall())
     video1 = settings.get("welcome_video1_file_id", "")
     video2 = settings.get("welcome_video2_file_id", "")
-    markup = mini_app_keyboard()
 
-    if video1 and video2:
-        await message.answer_media_group(media=[
-            InputMediaVideo(media=video1),
-            InputMediaVideo(media=video2),
-        ])
-        await message.answer(text, reply_markup=bonus_welcome_keyboard())
+    # First screen: logo video with its description and a separate START button.
+    if video1:
+        await message.answer_video(
+            video1,
+            caption=WELCOME_DESCRIPTION,
+            reply_markup=welcome_start_keyboard()
+        )
+        return
+
+    # Compatibility fallback until the first welcome video has been configured.
+    media_type = settings.get("welcome_media_type", "")
+    media_file_id = settings.get("welcome_media_file_id", "")
+    if media_file_id and media_type == "animation":
+        await message.answer_animation(
+            media_file_id, caption=WELCOME_DESCRIPTION,
+            reply_markup=welcome_start_keyboard()
+        )
+    elif media_file_id and media_type == "video":
+        await message.answer_video(
+            media_file_id, caption=WELCOME_DESCRIPTION,
+            reply_markup=welcome_start_keyboard()
+        )
+    elif media_file_id and media_type == "photo":
+        await message.answer_photo(
+            media_file_id, caption=WELCOME_DESCRIPTION,
+            reply_markup=welcome_start_keyboard()
+        )
+    elif WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
+        await message.answer_video(
+            FSInputFile(WELCOME_VIDEO_PATH), caption=WELCOME_DESCRIPTION,
+            reply_markup=welcome_start_keyboard()
+        )
     else:
-        # Backward-compatible fallback while the two clips are being uploaded.
-        media_type = settings.get("welcome_media_type", "")
-        media_file_id = settings.get("welcome_media_file_id", "")
-        if media_file_id and media_type == "animation":
-            await message.answer_animation(media_file_id, caption=text, reply_markup=markup)
-        elif media_file_id and media_type == "video":
-            await message.answer_video(media_file_id, caption=text, reply_markup=markup)
-        elif media_file_id and media_type == "photo":
-            await message.answer_photo(media_file_id, caption=text, reply_markup=markup)
-        elif WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
-            await message.answer_video(
-                FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup
+        await message.answer(
+            WELCOME_DESCRIPTION, reply_markup=welcome_start_keyboard()
+        )
+
+
+@dp.callback_query(F.data == "welcome:continue")
+async def welcome_continue(call: CallbackQuery):
+    if call.message:
+        with closing(db()) as con:
+            settings = dict(con.execute(
+                "SELECT key,value FROM app_settings WHERE key IN "
+                "('welcome_video2_file_id')"
+            ).fetchall())
+        video2 = settings.get("welcome_video2_file_id", "")
+        text = (
+            "🔥 Fresh bonuses & promo codes\n"
+            "🎰 Free Spins and casino offers\n"
+            "⚽ Sportsbook deals in one place\n\n"
+            "👇 Find your offer and claim your bonus!"
+        )
+        if video2:
+            await call.message.answer_video(
+                video2, caption=text, reply_markup=bonus_welcome_keyboard()
             )
         else:
-            await message.answer(text, reply_markup=markup or ReplyKeyboardRemove())
+            await call.message.answer(
+                "Второе видео пока не настроено. Администратору нужно отправить /setwelcome и загрузить оба ролика.",
+                reply_markup=mini_app_keyboard()
+            )
+    await call.answer()
 
 
 def bonus_welcome_keyboard():
