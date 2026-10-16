@@ -250,78 +250,47 @@ async def start(message: Message):
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
 
+    # The profile preview (description GIF + description text + Telegram Start
+    # button) is configured in BotFather. /start must show only the second clip.
     with closing(db()) as con:
         settings = dict(con.execute(
             "SELECT key,value FROM app_settings WHERE key IN "
-            "('welcome_video1_file_id','welcome_video2_file_id',"
-            "'welcome_media_type','welcome_media_file_id')"
+            "('welcome_video2_file_id','welcome_media_type','welcome_media_file_id')"
         ).fetchall())
-    video1 = settings.get("welcome_video1_file_id", "")
     video2 = settings.get("welcome_video2_file_id", "")
+    text = (
+        "🔥 Fresh bonuses & promo codes\n"
+        "🎰 Free Spins and casino offers\n"
+        "⚽ Sportsbook deals in one place\n\n"
+        "👇 Find your offer and claim your bonus!"
+    )
 
-    # First screen: logo video with its description and a separate START button.
-    if video1:
+    if video2:
         await message.answer_video(
-            video1,
-            caption=WELCOME_DESCRIPTION,
-            reply_markup=welcome_start_keyboard()
+            video2, caption=text, reply_markup=bonus_welcome_keyboard()
         )
         return
 
-    # Compatibility fallback until the first welcome video has been configured.
+    # Fallback for installations where the second clip has not been uploaded yet.
     media_type = settings.get("welcome_media_type", "")
     media_file_id = settings.get("welcome_media_file_id", "")
     if media_file_id and media_type == "animation":
         await message.answer_animation(
-            media_file_id, caption=WELCOME_DESCRIPTION,
-            reply_markup=welcome_start_keyboard()
+            media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
         )
     elif media_file_id and media_type == "video":
         await message.answer_video(
-            media_file_id, caption=WELCOME_DESCRIPTION,
-            reply_markup=welcome_start_keyboard()
+            media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
         )
     elif media_file_id and media_type == "photo":
         await message.answer_photo(
-            media_file_id, caption=WELCOME_DESCRIPTION,
-            reply_markup=welcome_start_keyboard()
-        )
-    elif WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
-        await message.answer_video(
-            FSInputFile(WELCOME_VIDEO_PATH), caption=WELCOME_DESCRIPTION,
-            reply_markup=welcome_start_keyboard()
+            media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
         )
     else:
         await message.answer(
-            WELCOME_DESCRIPTION, reply_markup=welcome_start_keyboard()
+            "Второе видео ещё не настроено. Администратору нужно загрузить его через /setwelcome.",
+            reply_markup=mini_app_keyboard()
         )
-
-
-@dp.callback_query(F.data == "welcome:continue")
-async def welcome_continue(call: CallbackQuery):
-    if call.message:
-        with closing(db()) as con:
-            settings = dict(con.execute(
-                "SELECT key,value FROM app_settings WHERE key IN "
-                "('welcome_video2_file_id')"
-            ).fetchall())
-        video2 = settings.get("welcome_video2_file_id", "")
-        text = (
-            "🔥 Fresh bonuses & promo codes\n"
-            "🎰 Free Spins and casino offers\n"
-            "⚽ Sportsbook deals in one place\n\n"
-            "👇 Find your offer and claim your bonus!"
-        )
-        if video2:
-            await call.message.answer_video(
-                video2, caption=text, reply_markup=bonus_welcome_keyboard()
-            )
-        else:
-            await call.message.answer(
-                "Второе видео пока не настроено. Администратору нужно отправить /setwelcome и загрузить оба ролика.",
-                reply_markup=mini_app_keyboard()
-            )
-    await call.answer()
 
 
 def bonus_welcome_keyboard():
