@@ -8,7 +8,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, ReplyKeyboardRemove, InputMediaVideo
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -232,35 +232,56 @@ async def start(message: Message):
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
 
-    # Second card shown after /start. The pre-start profile card is configured in BotFather.
+    # Two synchronized MP4 clips are sent as one Telegram album. The
+    # descriptive text and CTA are sent immediately below because Telegram
+    # albums do not support inline keyboards.
     text = (
-        "🔥 Лучшие предложения букмекеров и казино\n"
-        "🎁 Бонусы и промокоды\n"
-        "⚽ Спортивные бонусы и 🎰 Free Spins\n\n"
-        "👇 Открывай каталог и выбирай бонус!"
+        "🔥 БОНУСЫ, КОТОРЫЕ СТОИТ ЗАБРАТЬ\n\n"
+        "🎁 Бонусы букмекеров и казино в одном месте.\n"
+        "💰 Промокоды, фриспины и предложения от партнёров BONUS UP.\n\n"
+        "👇 Открывай каталог и выбирай свой бонус!"
     )
     with closing(db()) as con:
         settings = dict(con.execute(
             "SELECT key,value FROM app_settings WHERE key IN "
-            "('welcome_media_type','welcome_media_file_id')"
+            "('welcome_video1_file_id','welcome_video2_file_id',"
+            "'welcome_media_type','welcome_media_file_id')"
         ).fetchall())
-    media_type = settings.get("welcome_media_type", "")
-    media_file_id = settings.get("welcome_media_file_id", "")
+    video1 = settings.get("welcome_video1_file_id", "")
+    video2 = settings.get("welcome_video2_file_id", "")
     markup = mini_app_keyboard()
 
-    if media_file_id and media_type == "animation":
-        await message.answer_animation(media_file_id, caption=text, reply_markup=markup)
-    elif media_file_id and media_type == "video":
-        await message.answer_video(media_file_id, caption=text, reply_markup=markup)
-    elif media_file_id and media_type == "photo":
-        await message.answer_photo(media_file_id, caption=text, reply_markup=markup)
-    elif WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
-        await message.answer_video(
-            FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup
-        )
+    if video1 and video2:
+        await message.answer_media_group(media=[
+            InputMediaVideo(media=video1),
+            InputMediaVideo(media=video2),
+        ])
+        await message.answer(text, reply_markup=bonus_welcome_keyboard())
     else:
-        # Safe fallback until an admin uploads the post-start card via /setwelcome.
-        await message.answer(text, reply_markup=markup or ReplyKeyboardRemove())
+        # Backward-compatible fallback while the two clips are being uploaded.
+        media_type = settings.get("welcome_media_type", "")
+        media_file_id = settings.get("welcome_media_file_id", "")
+        if media_file_id and media_type == "animation":
+            await message.answer_animation(media_file_id, caption=text, reply_markup=markup)
+        elif media_file_id and media_type == "video":
+            await message.answer_video(media_file_id, caption=text, reply_markup=markup)
+        elif media_file_id and media_type == "photo":
+            await message.answer_photo(media_file_id, caption=text, reply_markup=markup)
+        elif WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
+            await message.answer_video(
+                FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup
+            )
+        else:
+            await message.answer(text, reply_markup=markup or ReplyKeyboardRemove())
+
+
+def bonus_welcome_keyboard():
+    kb = InlineKeyboardBuilder()
+    if WEBAPP_URL:
+        kb.button(text="🎁 ЗАБРАТЬ БОНУСЫ 🎁", web_app=WebAppInfo(url=WEBAPP_URL))
+        kb.adjust(1)
+        return kb.as_markup()
+    return None
 
 
 @dp.message(Command("setwelcome"))
@@ -268,48 +289,57 @@ async def set_welcome_media(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ запрещён.")
         return
-    admin_state[message.from_user.id] = {"action": "set_welcome_media"}
+    admin_state[message.from_user.id] = {"action": "set_welcome_media", "step": 1}
     await message.answer(
-        "🖼 Отправь следующим сообщением GIF-анимацию или видео для карточки после /start.\n"
-        "Можно также отправить фото. Медиа сохранится для будущих запусков."
+        "🎬 Настройка двух видео для приветствия.\n\n"
+        "Отправь ПЕРВЫЙ ролик в формате MP4 как видео (не GIF-анимацию). "
+        "Затем я попрошу отправить второй ролик.\n"
+        "Оба ролика будут показаны одним альбомом, а текст и кнопка «🎁 ЗАБРАТЬ БОНУСЫ 🎁» — под ним."
     )
 
 
 @dp.message(
-    (F.animation | F.video | F.photo),
+    F.video,
     lambda message: admin_state.get(message.from_user.id, {}).get("action") == "set_welcome_media",
 )
 async def receive_welcome_media(message: Message):
-    state = admin_state.get(message.from_user.id)
+    user_id = message.from_user.id
+    state = admin_state.get(user_id)
     if not state or state.get("action") != "set_welcome_media":
         return
-    if not is_admin(message.from_user.id):
-        admin_state.pop(message.from_user.id, None)
+    if not is_admin(user_id):
+        admin_state.pop(user_id, None)
         return
 
-    if message.animation:
-        media_type, file_id = "animation", message.animation.file_id
-    elif message.video:
-        media_type, file_id = "video", message.video.file_id
-    elif message.photo:
-        media_type, file_id = "photo", message.photo[-1].file_id
-    else:
-        return
+    step = int(state.get("step", 1))
+    file_id = message.video.file_id
+    key = "welcome_video1_file_id" if step == 1 else "welcome_video2_file_id"
 
-    with closing(db()) as con:
-        for key, value in (
-            ("welcome_media_type", media_type),
-            ("welcome_media_file_id", file_id),
-        ):
+    if step == 1:
+        with closing(db()) as con:
             con.execute(
                 "INSERT INTO app_settings(key,value) VALUES(?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value),
+                (key, file_id),
             )
+            con.commit()
+        admin_state[user_id] = {"action": "set_welcome_media", "step": 2}
+        await message.answer("✅ Первое видео сохранено. Теперь отправь ВТОРОЕ видео в формате MP4.")
+        return
+
+    with closing(db()) as con:
+        con.execute(
+            "INSERT INTO app_settings(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, file_id),
+        )
+        con.execute(
+            "DELETE FROM app_settings WHERE key IN ('welcome_media_type','welcome_media_file_id')"
+        )
         con.commit()
-    admin_state.pop(message.from_user.id, None)
+    admin_state.pop(user_id, None)
     await message.answer(
-        "✅ Карточка после /start сохранена. Теперь новые запуски будут показывать медиа, текст и кнопку бонусов."
+        "✅ Оба видео сохранены! Теперь отправь /start для проверки альбома, текста и кнопки «🎁 ЗАБРАТЬ БОНУСЫ 🎁»."
     )
 
 
