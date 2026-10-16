@@ -8,7 +8,7 @@ from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, ReplyKeyboardRemove, InputMediaVideo
+from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, BufferedInputFile, ReplyKeyboardRemove, InputMediaVideo
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from dotenv import load_dotenv
 from aiohttp import web
@@ -255,8 +255,10 @@ async def start(message: Message):
     with closing(db()) as con:
         settings = dict(con.execute(
             "SELECT key,value FROM app_settings WHERE key IN "
-            "('welcome_video2_file_id','welcome_media_type','welcome_media_file_id')"
+            "('welcome_video2_animation_file_id','welcome_video2_file_id',"
+            "'welcome_media_type','welcome_media_file_id')"
         ).fetchall())
+    animation2 = settings.get("welcome_video2_animation_file_id", "")
     video2 = settings.get("welcome_video2_file_id", "")
     text = (
         "🔥 Fresh bonuses & promo codes\n"
@@ -265,6 +267,11 @@ async def start(message: Message):
         "👇 Find your offer and claim your bonus!"
     )
 
+    if animation2:
+        await message.answer_animation(
+            animation2, caption=text, reply_markup=bonus_welcome_keyboard()
+        )
+        return
     if video2:
         await message.answer_video(
             video2, caption=text, reply_markup=bonus_welcome_keyboard()
@@ -309,10 +316,10 @@ async def set_welcome_media(message: Message):
         return
     admin_state[message.from_user.id] = {"action": "set_welcome_media", "step": 1}
     await message.answer(
-        "🎬 Настройка двух видео для приветствия.\n\n"
-        "Отправь ПЕРВЫЙ ролик в формате MP4 как видео (не GIF-анимацию). "
-        "Затем я попрошу отправить второй ролик.\n"
-        "Оба ролика будут показаны одним альбомом, а текст и кнопка «🎁 ЗАБРАТЬ БОНУСЫ 🎁» — под ним."
+        "🎬 Настройка двух роликов.\n\n"
+        "Отправь ПЕРВЫЙ ролик как обычное видео MP4. Затем отправь ВТОРОЙ ролик. "
+        "Второй ролик бот попробует сохранить и отправлять как зацикленную анимацию.\n"
+        "В профиле бота первое видео по-прежнему настраивается отдельно через BotFather."
     )
 
 
@@ -331,25 +338,43 @@ async def receive_welcome_media(message: Message):
 
     step = int(state.get("step", 1))
     file_id = message.video.file_id
-    key = "welcome_video1_file_id" if step == 1 else "welcome_video2_file_id"
 
     if step == 1:
         with closing(db()) as con:
             con.execute(
                 "INSERT INTO app_settings(key,value) VALUES(?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, file_id),
+                ("welcome_video1_file_id", file_id),
             )
             con.commit()
         admin_state[user_id] = {"action": "set_welcome_media", "step": 2}
-        await message.answer("✅ Первое видео сохранено. Теперь отправь ВТОРОЕ видео в формате MP4.")
+        await message.answer("✅ Первое видео сохранено. Теперь отправь ВТОРОЕ видео — оно будет подготовлено для отправки как анимация.")
+        return
+
+    # Re-upload the MP4 through sendAnimation so Telegram returns a file_id
+    # that is valid for animation playback. Telegram animations must be silent;
+    # if this file has an audio track or violates Telegram animation limits,
+    # Telegram will return an error and the current saved welcome media remains intact.
+    buffer = BytesIO()
+    await message.bot.download(message.video.file_id, destination=buffer)
+    animation_upload = await message.answer_animation(
+        animation=BufferedInputFile(buffer.getvalue(), filename="bonus-up-welcome.mp4"),
+        caption="✅ Второй ролик загружен как анимация. Проверь его воспроизведение.",
+    )
+    if not animation_upload.animation:
+        await message.answer("⚠️ Telegram не вернул файл анимации. Старые настройки сохранены.")
         return
 
     with closing(db()) as con:
         con.execute(
             "INSERT INTO app_settings(key,value) VALUES(?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, file_id),
+            ("welcome_video2_animation_file_id", animation_upload.animation.file_id),
+        )
+        con.execute(
+            "INSERT INTO app_settings(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("welcome_video2_file_id", file_id),
         )
         con.execute(
             "DELETE FROM app_settings WHERE key IN ('welcome_media_type','welcome_media_file_id')"
@@ -357,7 +382,8 @@ async def receive_welcome_media(message: Message):
         con.commit()
     admin_state.pop(user_id, None)
     await message.answer(
-        "✅ Оба видео сохранены! Теперь отправь /start для проверки альбома, текста и кнопки «🎁 ЗАБРАТЬ БОНУСЫ 🎁»."
+        "✅ Второй ролик сохранён для отправки как анимация. Теперь проверь /start. "
+        "Кнопка «🎁 ЗАБРАТЬ БОНУСЫ 🎁» и ссылка Mini App не изменены."
     )
 
 
