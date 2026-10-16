@@ -275,7 +275,10 @@ async def set_welcome_media(message: Message):
     )
 
 
-@dp.message(F.animation | F.video | F.photo)
+@dp.message(
+    (F.animation | F.video | F.photo),
+    lambda message: admin_state.get(message.from_user.id, {}).get("action") == "set_welcome_media",
+)
 async def receive_welcome_media(message: Message):
     state = admin_state.get(message.from_user.id)
     if not state or state.get("action") != "set_welcome_media":
