@@ -323,7 +323,7 @@ async def set_welcome_media(message: Message):
 
 
 @dp.message(
-    (F.animation | F.video),
+    (F.animation | F.video | F.document),
     lambda message: admin_state.get(message.from_user.id, {}).get("action") == "set_welcome_media",
 )
 async def receive_welcome_media(message: Message):
@@ -332,20 +332,24 @@ async def receive_welcome_media(message: Message):
         admin_state.pop(user_id, None)
         return
 
-    # Telegram may deliver a looping GIF as Animation or as a silent MP4 Video.
-    # Prefer Animation file_id; for Video, re-upload the bytes as Animation and
-    # retain a video fallback if Telegram rejects the animation format.
+    animation_id = ""
+    video_id = ""
     if message.animation:
         animation_id = message.animation.file_id
-        video_id = ""
     else:
-        video_id = message.video.file_id
+        # Android may send a GIF from Gallery as a Document. Re-upload bytes
+        # through Telegram sendAnimation so it is stored as an actual animation.
+        media = message.video or message.document
+        source_id = media.file_id
+        mime = getattr(media, "mime_type", "") or ""
+        filename = getattr(media, "file_name", "") or ""
+        is_gif = mime == "image/gif" or filename.lower().endswith(".gif")
+        extension = ".gif" if is_gif else ".mp4"
         buffer = BytesIO()
         try:
-            await message.bot.download(video_id, destination=buffer)
+            await message.bot.download(source_id, destination=buffer)
             uploaded = await message.answer_animation(
-                animation=BufferedInputFile(buffer.getvalue(), filename="bonus-up-welcome.mp4"),
-                caption="Проверка загрузки анимации",
+                animation=BufferedInputFile(buffer.getvalue(), filename="bonus-up-welcome" + extension),
             )
             if uploaded.animation:
                 animation_id = uploaded.animation.file_id
@@ -353,10 +357,12 @@ async def receive_welcome_media(message: Message):
                     await message.bot.delete_message(message.chat.id, uploaded.message_id)
                 except Exception:
                     pass
-            else:
-                animation_id = ""
         except Exception:
             animation_id = ""
+        if message.video:
+            video_id = message.video.file_id
+        elif not animation_id:
+            video_id = source_id
 
     with closing(db()) as con:
         if animation_id:
@@ -373,7 +379,6 @@ async def receive_welcome_media(message: Message):
                     (key, value),
                 )
         elif video_id:
-            # Preserve a usable fallback rather than losing the uploaded media.
             for key, value in (
                 ("welcome_video1_file_id", video_id),
                 ("welcome_video2_file_id", video_id),
@@ -389,14 +394,13 @@ async def receive_welcome_media(message: Message):
     admin_state.pop(user_id, None)
     if animation_id:
         await message.answer(
-            "✅ GIF сохранён как анимация для /start. Теперь отправь /start для проверки. "
-            "Кнопка «🎁 ЗАБРАТЬ БОНУСЫ 🎁» и ссылка Mini App не изменены. "
-            "Для профиля до Start установи тот же GIF через BotFather."
+            "✅ Файл принят и сохранён как анимация для /start. Отправь /start для проверки. "
+            "Кнопка «🎁 ЗАБРАТЬ БОНУСЫ 🎁» и ссылка Mini App не изменены."
         )
     else:
         await message.answer(
-            "⚠️ Telegram не принял файл как анимацию. Я сохранил его как видео, чтобы бот не потерял ролик. "
-            "Проверь /start; для автоматической анимации потребуется GIF/MP4 без звука, подходящий Telegram."
+            "⚠️ Не удалось преобразовать файл в анимацию. Файл не потерян, но для автоматического "
+            "движения нужен GIF или MP4, который Telegram принимает как анимацию."
         )
 
 
@@ -406,10 +410,9 @@ async def receive_welcome_media(message: Message):
 async def welcome_media_wrong_type(message: Message):
     if not is_admin(message.from_user.id):
         return
-    kind = "текст" if message.text else "документ/другой тип файла"
     await message.answer(
-        f"Я жду GIF-анимацию или видео, а получил: {kind}. "
-        "Отправь файл через скрепку как GIF/анимацию или как видео без звука."
+        "Я жду GIF, видео или документ с GIF-файлом. Пришли его сюда ещё раз — теперь бот попробует "
+        "принять документ и преобразовать его в анимацию."
     )
 
 
