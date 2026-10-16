@@ -232,25 +232,85 @@ async def start(message: Message):
         payload = message.text.split(" ", 1)[1][:100]
     add_user(message, payload)
 
-    # One polished welcome card: media, concise caption and a single Mini App CTA.
+    # Second card shown after /start. The pre-start profile card is configured in BotFather.
     text = (
-        "🎁 BONUS UP — БОНУСЫ БУКМЕКЕРОВ И КАЗИНО\n\n"
-        "🏆 Акции и промокоды в одном месте\n"
-        "⚽ Спортивные предложения\n"
-        "🎰 Бонусы казино и Free Spins\n\n"
-        "👇 Выбирай бонус и открывай каталог!"
+        "🔥 Лучшие предложения букмекеров и казино\n"
+        "🎁 Бонусы и промокоды\n"
+        "⚽ Спортивные бонусы и 🎰 Free Spins\n\n"
+        "👇 Открывай каталог и выбирай бонус!"
     )
-    if WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
+    with closing(db()) as con:
+        settings = dict(con.execute(
+            "SELECT key,value FROM app_settings WHERE key IN "
+            "('welcome_media_type','welcome_media_file_id')"
+        ).fetchall())
+    media_type = settings.get("welcome_media_type", "")
+    media_file_id = settings.get("welcome_media_file_id", "")
+    markup = mini_app_keyboard()
+
+    if media_file_id and media_type == "animation":
+        await message.answer_animation(media_file_id, caption=text, reply_markup=markup)
+    elif media_file_id and media_type == "video":
+        await message.answer_video(media_file_id, caption=text, reply_markup=markup)
+    elif media_file_id and media_type == "photo":
+        await message.answer_photo(media_file_id, caption=text, reply_markup=markup)
+    elif WELCOME_VIDEO_PATH and os.path.isfile(WELCOME_VIDEO_PATH):
         await message.answer_video(
-            FSInputFile(WELCOME_VIDEO_PATH),
-            caption=text,
-            reply_markup=mini_app_keyboard()
+            FSInputFile(WELCOME_VIDEO_PATH), caption=text, reply_markup=markup
         )
     else:
-        await message.answer(
-            text,
-            reply_markup=mini_app_keyboard() or ReplyKeyboardRemove()
-        )
+        # Safe fallback until an admin uploads the post-start card via /setwelcome.
+        await message.answer(text, reply_markup=markup or ReplyKeyboardRemove())
+
+
+@dp.message(Command("setwelcome"))
+async def set_welcome_media(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ запрещён.")
+        return
+    admin_state[message.from_user.id] = {"action": "set_welcome_media"}
+    await message.answer(
+        "🖼 Отправь следующим сообщением GIF-анимацию или видео для карточки после /start.\n"
+        "Можно также отправить фото. Медиа сохранится для будущих запусков."
+    )
+
+
+@dp.message(
+    (F.animation | F.video | F.photo),
+    lambda message: admin_state.get(message.from_user.id, {}).get("action") == "set_welcome_media",
+)
+async def receive_welcome_media(message: Message):
+    state = admin_state.get(message.from_user.id)
+    if not state or state.get("action") != "set_welcome_media":
+        return
+    if not is_admin(message.from_user.id):
+        admin_state.pop(message.from_user.id, None)
+        return
+
+    if message.animation:
+        media_type, file_id = "animation", message.animation.file_id
+    elif message.video:
+        media_type, file_id = "video", message.video.file_id
+    elif message.photo:
+        media_type, file_id = "photo", message.photo[-1].file_id
+    else:
+        return
+
+    with closing(db()) as con:
+        for key, value in (
+            ("welcome_media_type", media_type),
+            ("welcome_media_file_id", file_id),
+        ):
+            con.execute(
+                "INSERT INTO app_settings(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+        con.commit()
+    admin_state.pop(message.from_user.id, None)
+    await message.answer(
+        "✅ Карточка после /start сохранена. Теперь новые запуски будут показывать медиа, текст и кнопку бонусов."
+    )
 
 
 @dp.message(Command("admin"))
