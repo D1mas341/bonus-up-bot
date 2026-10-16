@@ -323,7 +323,7 @@ async def set_welcome_media(message: Message):
 
 
 @dp.message(
-    F.animation,
+    (F.animation | F.video),
     lambda message: admin_state.get(message.from_user.id, {}).get("action") == "set_welcome_media",
 )
 async def receive_welcome_media(message: Message):
@@ -332,25 +332,84 @@ async def receive_welcome_media(message: Message):
         admin_state.pop(user_id, None)
         return
 
-    animation_id = message.animation.file_id
-    with closing(db()) as con:
-        for key, value in (
-            ("welcome_video1_file_id", animation_id),
-            ("welcome_video2_animation_file_id", animation_id),
-            ("welcome_video2_file_id", ""),
-            ("welcome_media_type", "animation"),
-            ("welcome_media_file_id", animation_id),
-        ):
-            con.execute(
-                "INSERT INTO app_settings(key,value) VALUES(?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value),
+    # Telegram may deliver a looping GIF as Animation or as a silent MP4 Video.
+    # Prefer Animation file_id; for Video, re-upload the bytes as Animation and
+    # retain a video fallback if Telegram rejects the animation format.
+    if message.animation:
+        animation_id = message.animation.file_id
+        video_id = ""
+    else:
+        video_id = message.video.file_id
+        buffer = BytesIO()
+        try:
+            await message.bot.download(video_id, destination=buffer)
+            uploaded = await message.answer_animation(
+                animation=BufferedInputFile(buffer.getvalue(), filename="bonus-up-welcome.mp4"),
+                caption="Проверка загрузки анимации",
             )
+            if uploaded.animation:
+                animation_id = uploaded.animation.file_id
+                try:
+                    await message.bot.delete_message(message.chat.id, uploaded.message_id)
+                except Exception:
+                    pass
+            else:
+                animation_id = ""
+        except Exception:
+            animation_id = ""
+
+    with closing(db()) as con:
+        if animation_id:
+            for key, value in (
+                ("welcome_video1_file_id", animation_id),
+                ("welcome_video2_animation_file_id", animation_id),
+                ("welcome_video2_file_id", video_id),
+                ("welcome_media_type", "animation"),
+                ("welcome_media_file_id", animation_id),
+            ):
+                con.execute(
+                    "INSERT INTO app_settings(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+        elif video_id:
+            # Preserve a usable fallback rather than losing the uploaded media.
+            for key, value in (
+                ("welcome_video1_file_id", video_id),
+                ("welcome_video2_file_id", video_id),
+                ("welcome_media_type", "video"),
+                ("welcome_media_file_id", video_id),
+            ):
+                con.execute(
+                    "INSERT INTO app_settings(key,value) VALUES(?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
         con.commit()
     admin_state.pop(user_id, None)
+    if animation_id:
+        await message.answer(
+            "✅ GIF сохранён как анимация для /start. Теперь отправь /start для проверки. "
+            "Кнопка «🎁 ЗАБРАТЬ БОНУСЫ 🎁» и ссылка Mini App не изменены. "
+            "Для профиля до Start установи тот же GIF через BotFather."
+        )
+    else:
+        await message.answer(
+            "⚠️ Telegram не принял файл как анимацию. Я сохранил его как видео, чтобы бот не потерял ролик. "
+            "Проверь /start; для автоматической анимации потребуется GIF/MP4 без звука, подходящий Telegram."
+        )
+
+
+@dp.message(
+    lambda message: admin_state.get(message.from_user.id, {}).get("action") == "set_welcome_media",
+)
+async def welcome_media_wrong_type(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    kind = "текст" if message.text else "документ/другой тип файла"
     await message.answer(
-        "✅ Один и тот же GIF сохранён для /start. Кнопка «🎁 ЗАБРАТЬ БОНУСЫ 🎁» "
-        "и ссылка Mini App не изменены. Для профиля до Start установи этот же GIF через BotFather."
+        f"Я жду GIF-анимацию или видео, а получил: {kind}. "
+        "Отправь файл через скрепку как GIF/анимацию или как видео без звука."
     )
 
 
