@@ -236,10 +236,10 @@ async def start(message: Message):
     # descriptive text and CTA are sent immediately below because Telegram
     # albums do not support inline keyboards.
     text = (
-        "🔥 БОНУСЫ, КОТОРЫЕ СТОИТ ЗАБРАТЬ\n\n"
-        "🎁 Бонусы букмекеров и казино в одном месте.\n"
-        "💰 Промокоды, фриспины и предложения от партнёров BONUS UP.\n\n"
-        "👇 Открывай каталог и выбирай свой бонус!"
+        "🔥 Fresh bonuses & promo codes\n"
+        "🎰 Free Spins and casino offers\n"
+        "⚽ Sportsbook deals in one place\n\n"
+        "👇 Find your offer and claim your bonus!"
     )
     with closing(db()) as con:
         settings = dict(con.execute(
