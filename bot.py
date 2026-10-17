@@ -1768,8 +1768,12 @@ async def campaign_scheduler(bot: Bot):
                 users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
                 global_row = con.execute("SELECT value FROM app_settings WHERE key='last_campaign_broadcast'").fetchone()
             global_last = global_row[0] if global_row else ""
-            global_due = True
-            if global_last:
+            # A newly created campaign (no last_sent_at yet) should be allowed to
+            # make its first delivery immediately. The global throttle only spaces
+            # out subsequent broadcasts, not the first run of a new campaign.
+            has_never_sent_campaign = any(not row[7] for row in campaigns)
+            global_due = has_never_sent_campaign
+            if global_last and not global_due:
                 try:
                     stamp = datetime.fromisoformat(global_last.replace("Z","+00:00"))
                     # Global throttle prevents several campaigns from blasting users one after another.
