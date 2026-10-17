@@ -1348,6 +1348,43 @@ async def admin_campaign_media(message: Message):
     elif message.video:
         state["data"]["media_type"] = "video"
         state["data"]["media_file_id"] = message.video.file_id
+    elif message.document:
+        # Telegram on Android sometimes sends a GIF/JPG/PNG as a document.
+        # Re-upload it using the correct Bot API media method so the published
+        # campaign renders as an animation/photo rather than a downloadable file.
+        doc = message.document
+        mime = (doc.mime_type or "").lower()
+        filename = doc.file_name or "campaign-media"
+        is_gif = mime == "image/gif" or filename.lower().endswith(".gif")
+        is_image = mime.startswith("image/")
+        if not (is_gif or is_image):
+            await message.answer("Пришли GIF, изображение JPG/PNG или видео. Документ другого типа не подходит.")
+            return
+        buffer = BytesIO()
+        try:
+            await message.bot.download(doc.file_id, destination=buffer)
+            if is_gif:
+                uploaded = await message.answer_animation(
+                    BufferedInputFile(buffer.getvalue(), filename=filename if filename.lower().endswith(".gif") else "campaign.gif")
+                )
+                if not uploaded.animation:
+                    raise RuntimeError("Telegram did not return animation metadata")
+                state["data"]["media_type"] = "animation"
+                state["data"]["media_file_id"] = uploaded.animation.file_id
+            else:
+                safe_name = filename if filename.lower().endswith((".jpg", ".jpeg", ".png")) else "campaign.jpg"
+                uploaded = await message.answer_photo(BufferedInputFile(buffer.getvalue(), filename=safe_name))
+                if not uploaded.photo:
+                    raise RuntimeError("Telegram did not return photo metadata")
+                state["data"]["media_type"] = "photo"
+                state["data"]["media_file_id"] = uploaded.photo[-1].file_id
+            try:
+                await message.bot.delete_message(message.chat.id, uploaded.message_id)
+            except Exception:
+                pass
+        except Exception as exc:
+            await message.answer(f"Не удалось обработать файл. Попробуй отправить его как обычное фото или GIF-анимацию. ({type(exc).__name__})")
+            return
     else:
         await message.answer("Для рекламной публикации отправь фото, GIF/анимацию или видео.")
         return
@@ -1928,7 +1965,9 @@ async def go_campaign(request):
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
     with closing(db()) as con:
-        row = con.execute("SELECT button_url FROM campaigns WHERE id=? AND enabled=1", (campaign_id,)).fetchone()
+        # Existing sent cards should keep their partner link even if the admin
+        # disables future sends; deleting the campaign removes this route.
+        row = con.execute("SELECT button_url FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
         if row and row[0].startswith(("https://", "http://")):
             con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
             con.commit()
