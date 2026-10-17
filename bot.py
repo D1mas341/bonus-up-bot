@@ -1039,7 +1039,7 @@ async def admin_campaign_media(message: Message):
     if not is_admin(uid) or not state:
         return
 
-    # Offer logo upload accepts Telegram photos/ and image documents independently
+    # Offer logo upload accepts Telegram photos and image documents independently
     # from promo-code editing. Existing promo_code is never overwritten here.
     if state.get("action") in {"logo_only", "promo"} and state.get("step") == "logo_url":
         if message.photo:
