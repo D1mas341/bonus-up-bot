@@ -192,7 +192,6 @@ def admin_keyboard():
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
     kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
-    kb.button(text="🖼 Баннер после /start", callback_data="adm:startbanner")
     kb.button(text="👥 Пользователи", callback_data="adm:users")
     kb.adjust(1)
     return kb.as_markup()
@@ -272,13 +271,11 @@ async def start(message: Message):
         await message.answer_animation(
             animation2, caption=text, reply_markup=bonus_welcome_keyboard()
         )
-        await send_start_banner(message)
         return
     if video2:
         await message.answer_video(
             video2, caption=text, reply_markup=bonus_welcome_keyboard()
         )
-        await send_start_banner(message)
         return
 
     # Fallback for installations where the second clip has not been uploaded yet.
@@ -301,65 +298,7 @@ async def start(message: Message):
             "Второе видео ещё не настроено. Администратору нужно загрузить его через /setwelcome.",
             reply_markup=mini_app_keyboard()
         )
-    await send_start_banner(message)
 
-
-@dp.callback_query(F.data == "adm:startbanner")
-async def adm_startbanner(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        await call.answer("⛔ Нет доступа", show_alert=True)
-        return
-    admin_state[call.from_user.id] = {"action": "start_banner", "step": "image"}
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🗑 Удалить баннер после /start", callback_data="adm:startbanner_remove")
-    kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
-    kb.adjust(1)
-    await call.message.edit_text(
-        "🖼 БАННЕР ПОСЛЕ /START\n\n"
-        "Пришли VAVADA-баннер как фотографию или как файл JPG/PNG. "
-        "Он будет отправляться отдельным сообщением сразу после приветствия и кнопки "
-        "«🎁 ЗАБРАТЬ БОНУСЫ 🎁». Mini App и существующие карточки не изменятся.\n\n"
-        "Для отмены напиши «отмена».",
-        reply_markup=kb.as_markup()
-    )
-    await call.answer()
-
-
-@dp.callback_query(F.data == "adm:startbanner_remove")
-async def adm_startbanner_remove(call: CallbackQuery):
-    if not is_admin(call.from_user.id):
-        await call.answer("⛔ Нет доступа", show_alert=True)
-        return
-    with closing(db()) as con:
-        con.execute("DELETE FROM app_settings WHERE key='start_banner_file_id'")
-        con.commit()
-    admin_state.pop(call.from_user.id, None)
-    await call.answer("Баннер удалён")
-    await call.message.edit_text("✅ Баннер после /start удалён.", reply_markup=admin_keyboard())
-
-
-async def send_start_banner(message: Message):
-    with closing(db()) as con:
-        row = con.execute(
-            "SELECT value FROM app_settings WHERE key='start_banner_file_id'"
-        ).fetchone()
-    if not row or not row[0]:
-        print("[start-banner] No start_banner_file_id configured", flush=True)
-        return
-    try:
-        sent = await message.answer_photo(row[0])
-        print(
-            f"[start-banner] Sent banner chat_id={message.chat.id} message_id={sent.message_id}",
-            flush=True,
-        )
-    except Exception as exc:
-        # Log the real cause instead of silently hiding failed banner delivery.
-        print(f"[start-banner] Failed to send banner: {type(exc).__name__}: {exc}", flush=True)
-        if is_admin(message.from_user.id):
-            await message.answer(
-                "⚠️ Баннер не отправился. Причина записана в лог Railway; "
-                "проверьте логи и пришлите сообщение об ошибке."
-            )
 
 
 def bonus_welcome_keyboard():
@@ -1100,32 +1039,7 @@ async def admin_campaign_media(message: Message):
     if not is_admin(uid) or not state:
         return
 
-    # The post-/start promotional banner is stored as a Telegram file_id,
-    # so the same image can be delivered to users without copying it into the Mini App.
-    if state.get("action") == "start_banner" and state.get("step") == "image":
-        if message.photo:
-            file_id = message.photo[-1].file_id
-        elif message.document and (message.document.mime_type or "").startswith("image/"):
-            file_id = message.document.file_id
-        else:
-            await message.answer("Пришли баннер как фотографию или файл изображения JPG/PNG.")
-            return
-        with closing(db()) as con:
-            con.execute(
-                "INSERT INTO app_settings(key,value) VALUES('start_banner_file_id',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (file_id,)
-            )
-            con.commit()
-        admin_state.pop(uid, None)
-        await message.answer(
-            "✅ Баннер сохранён. Он будет отправляться отдельным сообщением после приветствия при каждом /start. "
-            "Чтобы проверить, отправь /start. Для замены снова открой «🖼 Баннер после /start».",
-            reply_markup=admin_keyboard()
-        )
-        return
-
-    # Offer logo upload accepts Telegram photos and image documents independently
+    # Offer logo upload accepts Telegram photos/ and image documents independently
     # from promo-code editing. Existing promo_code is never overwritten here.
     if state.get("action") in {"logo_only", "promo"} and state.get("step") == "logo_url":
         if message.photo:
