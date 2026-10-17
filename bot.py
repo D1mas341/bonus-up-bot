@@ -326,6 +326,9 @@ async def send_start_promotions(message: Message):
                 await message.answer_video(file_id, caption=caption or None, reply_markup=markup)
             elif body:
                 await message.answer(body[:4096], reply_markup=markup)
+            with closing(db()) as con:
+                con.execute("UPDATE campaigns SET sent_count=sent_count+1 WHERE id=?", (cid,))
+                con.commit()
             await asyncio.sleep(0.15)
         except Exception as exc:
             print(f"[start-promotions] campaign_id={cid} error={type(exc).__name__}: {exc}", flush=True)
@@ -772,21 +775,25 @@ async def adm_camp_toggle(call: CallbackQuery):
         return
     cid = int(call.data.rsplit(":",1)[1])
     with closing(db()) as con:
-        row = con.execute("SELECT enabled FROM campaigns WHERE id=?", (cid,)).fetchone()
+        row = con.execute("SELECT enabled,COALESCE(placement,'broadcast') FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             await call.answer("Публикация не найдена", show_alert=True)
             return
         if int(row[0] or 0):
             con.execute("UPDATE campaigns SET enabled=0 WHERE id=?", (cid,))
-            notice = "Публикация выключена"
+            notice = "Баннер выключен" if row[1] == "start" else "Публикация выключена"
         else:
-            # Mark enablement time so the scheduler treats this as a fresh campaign
-            # and can send its first post without waiting for the previous campaign's interval.
-            con.execute(
-                "UPDATE campaigns SET enabled=1, created_at=CURRENT_TIMESTAMP, last_sent_at='' WHERE id=?",
-                (cid,)
-            )
-            notice = "Публикация включена; первая отправка ожидается в ближайшую минуту"
+            # Reset the schedule only for scheduled broadcasts. Start-placement
+            # banners are sent when a user invokes /start and need no timer.
+            if row[1] == "start":
+                con.execute("UPDATE campaigns SET enabled=1 WHERE id=?", (cid,))
+                notice = "Баннер включён: будет показываться после /start"
+            else:
+                con.execute(
+                    "UPDATE campaigns SET enabled=1, created_at=CURRENT_TIMESTAMP, last_sent_at='' WHERE id=?",
+                    (cid,)
+                )
+                notice = "Публикация включена; первая отправка ожидается в ближайшую минуту"
         con.commit()
     await call.answer(notice)
     await adm_campaigns(call)
@@ -1171,7 +1178,7 @@ async def admin_campaign_media(message: Message):
         await message.answer("Для рекламной публикации отправь фото или видео, не файл документа.")
         return
     state["step"] = "button_text"
-    await message.answer("4/6. Текст кнопки или - без кнопки:")
+    await message.answer("4/7. Текст кнопки или - без кнопки:")
 
 
 @dp.message()
@@ -1205,12 +1212,12 @@ async def admin_text(message: Message):
         if step == "title":
             d["title"] = text
             state["step"] = "body"
-            await message.answer("2/6. Текст публикации:")
+            await message.answer("2/7. Текст публикации:")
             return
         if step == "body":
             d["body"] = "" if text == "-" else text
             state["step"] = "media"
-            await message.answer("3/6. Пришли фото или видео отдельным сообщением. Для текста без медиа напиши -.")
+            await message.answer("3/7. Пришли фото или видео отдельным сообщением. Для текста без медиа напиши -.")
             return
         if step == "media":
             if text != "-":
@@ -1225,7 +1232,7 @@ async def admin_text(message: Message):
             d["button_text"] = "" if text == "-" else text[:64]
             if d["button_text"]:
                 state["step"] = "button_url"
-                await message.answer("5/6. Ссылка кнопки (https://...).")
+                await message.answer("5/7. Ссылка кнопки (https://...).")
             else:
                 d["button_url"] = ""
                 state["step"] = "placement"
