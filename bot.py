@@ -913,10 +913,6 @@ async def adm_camp_delete(call: CallbackQuery):
             )
         await asyncio.sleep(0.03)
     with closing(db()) as con:
-        con.execute("DELETE FROM campaign_sends WHERE campaign_id=?", (cid,))
-        con.execute("DELETE FROM campaigns WHERE id=?", (cid,))
-        con.commit()
-    with closing(db()) as con:
         con.execute("DELETE FROM campaign_delivery_messages WHERE campaign_id=?", (cid,))
         con.execute("DELETE FROM campaign_sends WHERE campaign_id=?", (cid,))
         con.execute("DELETE FROM campaigns WHERE id=?", (cid,))
