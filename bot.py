@@ -194,6 +194,7 @@ def admin_keyboard():
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
     kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
+    kb.button(text="✍️ Разовая текстовая рассылка", callback_data="adm:text_broadcast")
     kb.button(text="👥 Пользователи", callback_data="adm:users")
     kb.adjust(1)
     return kb.as_markup()
@@ -737,6 +738,68 @@ async def adm_users(call: CallbackQuery):
     await call.answer()
 
 
+@dp.callback_query(F.data == "adm:text_broadcast")
+async def adm_text_broadcast(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    admin_state[call.from_user.id] = {"action": "text_broadcast", "step": "body"}
+    await call.message.answer(
+        "✍️ РАЗОВАЯ ТЕКСТОВАЯ РАССЫЛКА\n\n"
+        "Отправь рекламный текст, который нужно прямо сейчас разослать пользователям бота. "
+        "Это отдельное сообщение — оно не будет вставляться между баннером и кнопкой.\n\n"
+        "Для отмены напиши «отмена»."
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:text_broadcast_send:"))
+async def adm_text_broadcast_send(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    token = call.data.rsplit(":", 1)[1]
+    state = admin_state.get(call.from_user.id, {})
+    if state.get("action") != "text_broadcast_confirm" or state.get("token") != token:
+        await call.answer("Рассылка уже отменена или устарела.", show_alert=True)
+        return
+    body = state.get("body", "")
+    if not body:
+        await call.answer("Текст не найден.", show_alert=True)
+        return
+    with closing(db()) as con:
+        user_rows = con.execute("SELECT user_id FROM users").fetchall()
+    await call.answer("Начинаю рассылку…")
+    await call.message.edit_text("📤 Рассылаю сообщение подписчикам…")
+    delivered = 0
+    failed = 0
+    for (target_id,) in user_rows:
+        try:
+            await call.bot.send_message(int(target_id), body[:4096])
+            delivered += 1
+        except Exception as exc:
+            failed += 1
+            print(f"[manual-text-broadcast] user_id={target_id} error={type(exc).__name__}: {exc}", flush=True)
+        await asyncio.sleep(0.05)
+    admin_state.pop(call.from_user.id, None)
+    await call.message.answer(
+        f"✅ Текстовая рассылка завершена.\n\n"
+        f"Доставлено: {delivered}\n"
+        f"Не доставлено: {failed}",
+        reply_markup=admin_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "adm:text_broadcast_cancel")
+async def adm_text_broadcast_cancel(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    admin_state.pop(call.from_user.id, None)
+    await call.message.edit_text("❌ Текстовая рассылка отменена.", reply_markup=admin_keyboard())
+    await call.answer()
+
+
 @dp.callback_query(F.data == "adm:campaigns")
 async def adm_campaigns(call: CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -1205,6 +1268,26 @@ async def admin_text(message: Message):
     if text.lower() in {"отмена", "/cancel"}:
         admin_state.pop(uid, None)
         await message.answer("❌ Отменено.", reply_markup=admin_keyboard())
+        return
+
+    if action == "text_broadcast" and step == "body":
+        if not text:
+            await message.answer("Отправь текст рассылки или напиши «отмена».")
+            return
+        kb = InlineKeyboardBuilder()
+        kb.button(text="📤 Отправить всем сейчас", callback_data="adm:text_broadcast_send:confirm")
+        kb.button(text="❌ Отмена", callback_data="adm:text_broadcast_cancel")
+        kb.adjust(1)
+        state["action"] = "text_broadcast_confirm"
+        state["body"] = text
+        state["token"] = "confirm"
+        with closing(db()) as con:
+            total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        await message.answer(
+            f"⚠️ ПРОВЕРЬ ТЕКСТ ПЕРЕД ОТПРАВКОЙ\n\n{text}\n\n"
+            f"Получателей в базе: {total}. Отправить сейчас отдельным сообщением всем пользователям бота?",
+            reply_markup=kb.as_markup()
+        )
         return
 
     if action == "campaign":
