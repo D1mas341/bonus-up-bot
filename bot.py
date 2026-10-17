@@ -802,9 +802,23 @@ async def adm_camp_toggle(call: CallbackQuery):
         return
     cid = int(call.data.rsplit(":",1)[1])
     with closing(db()) as con:
-        con.execute("UPDATE campaigns SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (cid,))
+        row = con.execute("SELECT enabled FROM campaigns WHERE id=?", (cid,)).fetchone()
+        if not row:
+            await call.answer("Публикация не найдена", show_alert=True)
+            return
+        if int(row[0] or 0):
+            con.execute("UPDATE campaigns SET enabled=0 WHERE id=?", (cid,))
+            notice = "Публикация выключена"
+        else:
+            # Mark enablement time so the scheduler treats this as a fresh campaign
+            # and can send its first post without waiting for the previous campaign's interval.
+            con.execute(
+                "UPDATE campaigns SET enabled=1, created_at=CURRENT_TIMESTAMP, last_sent_at='' WHERE id=?",
+                (cid,)
+            )
+            notice = "Публикация включена; первая отправка ожидается в ближайшую минуту"
         con.commit()
-    await call.answer("Статус изменён")
+    await call.answer(notice)
     await adm_campaigns(call)
 
 
@@ -1852,8 +1866,8 @@ async def campaign_scheduler(bot: Bot):
                             con.commit()
                         # One campaign per 8-hour window; avoid a burst when several are enabled.
                         break
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[campaign-scheduler] Error: {type(exc).__name__}: {exc}", flush=True)
         await asyncio.sleep(60)
 
 
