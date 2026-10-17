@@ -102,9 +102,13 @@ def init_db():
             campaign_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            message_id INTEGER DEFAULT NULL,
             PRIMARY KEY(campaign_id,user_id)
         )
         """)
+        send_cols = [r[1] for r in con.execute("PRAGMA table_info(campaign_sends)").fetchall()]
+        if "message_id" not in send_cols:
+            con.execute("ALTER TABLE campaign_sends ADD COLUMN message_id INTEGER DEFAULT NULL")
         con.execute("""
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
@@ -869,10 +873,27 @@ async def adm_camp_delete(call: CallbackQuery):
         return
     cid = int(call.data.rsplit(":",1)[1])
     with closing(db()) as con:
+        sent_rows = con.execute(
+            "SELECT user_id,message_id FROM campaign_sends WHERE campaign_id=? AND message_id IS NOT NULL",
+            (cid,)
+        ).fetchall()
+    deleted_messages = 0
+    for target_id, message_id in sent_rows:
+        try:
+            await call.bot.delete_message(chat_id=int(target_id), message_id=int(message_id))
+            deleted_messages += 1
+        except Exception as exc:
+            print(
+                f"[campaign-delete] campaign_id={cid} user_id={target_id} "
+                f"message_id={message_id} error={type(exc).__name__}: {exc}",
+                flush=True
+            )
+        await asyncio.sleep(0.03)
+    with closing(db()) as con:
         con.execute("DELETE FROM campaign_sends WHERE campaign_id=?", (cid,))
         con.execute("DELETE FROM campaigns WHERE id=?", (cid,))
         con.commit()
-    await call.answer("Удалено")
+    await call.answer(f"Публикация удалена. Удалено сообщений: {deleted_messages}", show_alert=True)
     await adm_campaigns(call)
 
 
@@ -1892,15 +1913,19 @@ async def campaign_scheduler(bot: Bot):
                             continue
                         try:
                             if media_type == "photo" and file_id:
-                                await bot.send_photo(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                                sent_message = await bot.send_photo(user_id, file_id, caption=body[:1024], reply_markup=markup)
                             elif media_type == "video" and file_id:
-                                await bot.send_video(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                                sent_message = await bot.send_video(user_id, file_id, caption=body[:1024], reply_markup=markup)
                             else:
-                                await bot.send_message(user_id, body[:4096], reply_markup=markup)
+                                sent_message = await bot.send_message(user_id, body[:4096], reply_markup=markup)
                             delivered += 1
                             with closing(db()) as con:
                                 con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
-                                con.execute("INSERT OR IGNORE INTO campaign_sends(campaign_id,user_id) VALUES(?,?)", (cid,user_id))
+                                con.execute(
+                                    "INSERT OR REPLACE INTO campaign_sends(campaign_id,user_id,message_id,sent_at) "
+                                    "VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                                    (cid,user_id,sent_message.message_id)
+                                )
                                 con.commit()
                             last_campaign_by_user[int(user_id)] = int(cid)
                         except Exception:
