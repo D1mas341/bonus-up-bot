@@ -106,6 +106,17 @@ def init_db():
             PRIMARY KEY(campaign_id,user_id)
         )
         """)
+        # Keep every delivered message ID so deleting a campaign can remove all
+        # of its published copies, including repeated manual broadcasts.
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS campaign_delivery_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            campaign_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
         send_cols = [r[1] for r in con.execute("PRAGMA table_info(campaign_sends)").fetchall()]
         if "message_id" not in send_cols:
             con.execute("ALTER TABLE campaign_sends ADD COLUMN message_id INTEGER DEFAULT NULL")
@@ -812,10 +823,16 @@ async def adm_campaigns(call: CallbackQuery):
     with closing(db()) as con:
         rows = con.execute("SELECT id,title,enabled,interval_hours,sent_count,click_count,COALESCE(placement,'broadcast') FROM campaigns ORDER BY position,id").fetchall()
     kb = InlineKeyboardBuilder()
-    lines = ["📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ", "", "Создавай рассылки по расписанию или баннеры, которые появляются под кнопкой «ЗАБРАТЬ БОНУСЫ» после /start."]
+    lines = ["📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ", "", "Создавай рекламные карточки с фото/GIF, отдельным текстом и кнопкой с партнёрской ссылкой. Можно отправлять вручную всем подписчикам или включить рассылку по расписанию."]
     for cid,title,enabled,interval,sent,clicks,placement in rows:
-        where = "под /start" if placement == "start" else f"каждые {interval} ч."
+        if placement == "start":
+            where = "старый режим /start"
+        elif placement == "manual":
+            where = "ручная публикация"
+        else:
+            where = f"по расписанию: каждые {interval} ч."
         lines.append(f"{'🟢' if enabled else '🔴'} #{cid} {title or 'Без названия'} — {where} | отправок {sent} | кликов {clicks}")
+        kb.button(text=f"📣 Отправить сейчас #{cid}", callback_data=f"adm:camp_send:{cid}")
         kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{cid}", callback_data=f"adm:camp_toggle:{cid}")
         kb.button(text=f"🗑 Удалить #{cid}", callback_data=f"adm:camp_delete:{cid}")
     kb.button(text="➕ Создать публикацию", callback_data="adm:camp_add")
@@ -874,9 +891,15 @@ async def adm_camp_delete(call: CallbackQuery):
     cid = int(call.data.rsplit(":",1)[1])
     with closing(db()) as con:
         sent_rows = con.execute(
+            "SELECT user_id,message_id FROM campaign_delivery_messages WHERE campaign_id=?",
+            (cid,)
+        ).fetchall()
+        legacy_rows = con.execute(
             "SELECT user_id,message_id FROM campaign_sends WHERE campaign_id=? AND message_id IS NOT NULL",
             (cid,)
         ).fetchall()
+    # Include legacy tracked messages, avoiding duplicate attempts.
+    sent_rows = list(dict.fromkeys(sent_rows + legacy_rows))
     deleted_messages = 0
     for target_id, message_id in sent_rows:
         try:
@@ -890,11 +913,76 @@ async def adm_camp_delete(call: CallbackQuery):
             )
         await asyncio.sleep(0.03)
     with closing(db()) as con:
+        con.execute("DELETE FROM campaign_delivery_messages WHERE campaign_id=?", (cid,))
         con.execute("DELETE FROM campaign_sends WHERE campaign_id=?", (cid,))
         con.execute("DELETE FROM campaigns WHERE id=?", (cid,))
         con.commit()
     await call.answer(f"Публикация удалена. Удалено сообщений: {deleted_messages}", show_alert=True)
     await adm_campaigns(call)
+
+
+@dp.callback_query(F.data.startswith("adm:camp_send:"))
+async def adm_camp_send(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    cid = int(call.data.rsplit(":", 1)[1])
+    with closing(db()) as con:
+        campaign = con.execute(
+            "SELECT title,body,media_type,media_file_id,button_text,button_url FROM campaigns WHERE id=?",
+            (cid,)
+        ).fetchone()
+        users = con.execute("SELECT user_id FROM users").fetchall()
+    if not campaign:
+        await call.answer("Публикация не найдена.", show_alert=True)
+        return
+    title, body, media_type, file_id, button_text, button_url = campaign
+    if not body and not file_id:
+        await call.answer("В публикации нет ни текста, ни медиа.", show_alert=True)
+        return
+    markup = None
+    if button_text and button_url:
+        base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+        tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
+        markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=button_text, url=tracked_url)]
+        ])
+    await call.answer("Начинаю рассылку…")
+    await call.message.edit_text(f"📤 Отправляю «{title or 'Без названия'}» всем подписчикам…")
+    delivered = 0
+    failed = 0
+    for (target_id,) in users:
+        try:
+            if media_type == "photo" and file_id:
+                sent = await call.bot.send_photo(int(target_id), file_id, caption=(body or "")[:1024] or None, reply_markup=markup)
+            elif media_type == "animation" and file_id:
+                sent = await call.bot.send_animation(int(target_id), file_id, caption=(body or "")[:1024] or None, reply_markup=markup)
+            elif media_type == "video" and file_id:
+                sent = await call.bot.send_video(int(target_id), file_id, caption=(body or "")[:1024] or None, reply_markup=markup)
+            else:
+                sent = await call.bot.send_message(int(target_id), (body or title or "BONUS UP")[:4096], reply_markup=markup)
+            delivered += 1
+            with closing(db()) as con:
+                con.execute(
+                    "INSERT INTO campaign_delivery_messages(campaign_id,user_id,message_id,sent_at) VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                    (cid, int(target_id), sent.message_id)
+                )
+                con.execute(
+                    "INSERT OR REPLACE INTO campaign_sends(campaign_id,user_id,message_id,sent_at) VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                    (cid, int(target_id), sent.message_id)
+                )
+                con.commit()
+        except Exception as exc:
+            failed += 1
+            print(f"[manual-campaign-broadcast] campaign_id={cid} user_id={target_id} error={type(exc).__name__}: {exc}", flush=True)
+        await asyncio.sleep(0.05)
+    with closing(db()) as con:
+        con.execute("UPDATE campaigns SET sent_count=sent_count+? WHERE id=?", (delivered, cid))
+        con.commit()
+    await call.message.answer(
+        f"✅ Публикация отправлена.\n\nПолучателей в базе: {len(users)}\nДоставлено: {delivered}\nНе доставлено: {failed}",
+        reply_markup=admin_keyboard()
+    )
 
 
 @dp.callback_query(F.data == "adm:clicks")
@@ -1154,7 +1242,7 @@ async def adm_banneradd(call: CallbackQuery):
     await call.answer()
 
 
-@dp.message(F.photo | F.video | F.document)
+@dp.message(F.photo | F.video | F.animation | F.document)
 async def admin_campaign_media(message: Message):
     uid = message.from_user.id
     state = admin_state.get(uid)
@@ -1255,11 +1343,14 @@ async def admin_campaign_media(message: Message):
     if message.photo:
         state["data"]["media_type"] = "photo"
         state["data"]["media_file_id"] = message.photo[-1].file_id
+    elif message.animation:
+        state["data"]["media_type"] = "animation"
+        state["data"]["media_file_id"] = message.animation.file_id
     elif message.video:
         state["data"]["media_type"] = "video"
         state["data"]["media_file_id"] = message.video.file_id
     else:
-        await message.answer("Для рекламной публикации отправь фото или видео, не файл документа.")
+        await message.answer("Для рекламной публикации отправь фото, GIF/анимацию или видео.")
         return
     state["step"] = "button_text"
     await message.answer("4/7. Текст кнопки или - без кнопки:")
@@ -1340,7 +1431,7 @@ async def admin_text(message: Message):
             else:
                 d["button_url"] = ""
                 state["step"] = "placement"
-                await message.answer("6/7. Где показывать публикацию?\n1 — рассылка подписчикам по расписанию\n2 — баннер под кнопкой «ЗАБРАТЬ БОНУСЫ» после /start.\nВведи 1 или 2.")
+                await message.answer("6/7. Как публиковать?\n1 — автоматическая рассылка по расписанию\n2 — отправлять вручную кнопкой «Отправить сейчас».\nВведи 1 или 2.")
             return
         if step == "button_url":
             if not text.startswith(("https://","http://")):
@@ -1348,21 +1439,21 @@ async def admin_text(message: Message):
                 return
             d["button_url"] = text
             state["step"] = "placement"
-            await message.answer("6/7. Где показывать публикацию?\n1 — рассылка подписчикам по расписанию\n2 — баннер под кнопкой «ЗАБРАТЬ БОНУСЫ» после /start.\nВведи 1 или 2.")
+            await message.answer("6/7. Как публиковать?\n1 — автоматическая рассылка по расписанию\n2 — отправлять вручную кнопкой «Отправить сейчас».\nВведи 1 или 2.")
             return
         if step == "placement":
             if text not in {"1", "2"}:
-                await message.answer("Введи 1 для рассылки по расписанию или 2 для баннера после /start.")
+                await message.answer("Введи 1 для рассылки по расписанию или 2 для ручной публикации.")
                 return
-            d["placement"] = "broadcast" if text == "1" else "start"
-            if d["placement"] == "start":
+            d["placement"] = "broadcast" if text == "1" else "manual"
+            if d["placement"] == "manual":
                 with closing(db()) as con:
                     pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM campaigns").fetchone()[0]
                     con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours,placement) VALUES(?,?,?,?,?,?,0,?,8,?)",
-                        (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,"start"))
+                        (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,"manual"))
                     con.commit()
                 admin_state.pop(uid, None)
-                await message.answer("✅ Баннер сохранён и выключен. Включи его в «📢 Рекламные публикации» — он будет показываться после приветствия и кнопки «ЗАБРАТЬ БОНУСЫ» при каждом /start.", reply_markup=admin_keyboard())
+                await message.answer("✅ Рекламная карточка сохранена. Она не отправится сама. Когда будешь готов, открой «📢 Рекламные публикации» и нажми «📣 Отправить сейчас».", reply_markup=admin_keyboard())
                 return
             state["step"] = "interval"
             await message.answer("7/7. Интервал рассылки в часах: 8 = примерно 3 раза в день, 12 = 2 раза в день.")
@@ -1913,9 +2004,11 @@ async def campaign_scheduler(bot: Bot):
                             continue
                         try:
                             if media_type == "photo" and file_id:
-                                sent_message = await bot.send_photo(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                                sent_message = await bot.send_photo(user_id, file_id, caption=body[:1024] or None, reply_markup=markup)
+                            elif media_type == "animation" and file_id:
+                                sent_message = await bot.send_animation(user_id, file_id, caption=body[:1024] or None, reply_markup=markup)
                             elif media_type == "video" and file_id:
-                                sent_message = await bot.send_video(user_id, file_id, caption=body[:1024], reply_markup=markup)
+                                sent_message = await bot.send_video(user_id, file_id, caption=body[:1024] or None, reply_markup=markup)
                             else:
                                 sent_message = await bot.send_message(user_id, body[:4096], reply_markup=markup)
                             delivered += 1
@@ -1923,6 +2016,11 @@ async def campaign_scheduler(bot: Bot):
                                 con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
                                 con.execute(
                                     "INSERT OR REPLACE INTO campaign_sends(campaign_id,user_id,message_id,sent_at) "
+                                    "VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                                    (cid,user_id,sent_message.message_id)
+                                )
+                                con.execute(
+                                    "INSERT INTO campaign_delivery_messages(campaign_id,user_id,message_id,sent_at) "
                                     "VALUES(?,?,?,CURRENT_TIMESTAMP)",
                                     (cid,user_id,sent_message.message_id)
                                 )
