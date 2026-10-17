@@ -343,12 +343,23 @@ async def send_start_banner(message: Message):
         row = con.execute(
             "SELECT value FROM app_settings WHERE key='start_banner_file_id'"
         ).fetchone()
-    if row and row[0]:
-        try:
-            await message.answer_photo(row[0])
-        except Exception:
-            # A stale/invalid Telegram file ID must not break the welcome flow.
-            pass
+    if not row or not row[0]:
+        print("[start-banner] No start_banner_file_id configured", flush=True)
+        return
+    try:
+        sent = await message.answer_photo(row[0])
+        print(
+            f"[start-banner] Sent banner chat_id={message.chat.id} message_id={sent.message_id}",
+            flush=True,
+        )
+    except Exception as exc:
+        # Log the real cause instead of silently hiding failed banner delivery.
+        print(f"[start-banner] Failed to send banner: {type(exc).__name__}: {exc}", flush=True)
+        if is_admin(message.from_user.id):
+            await message.answer(
+                "⚠️ Баннер не отправился. Причина записана в лог Railway; "
+                "проверьте логи и пришлите сообщение об ошибке."
+            )
 
 
 def bonus_welcome_keyboard():
