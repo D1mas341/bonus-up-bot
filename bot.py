@@ -314,7 +314,6 @@ async def start(message: Message):
                 "Второе видео ещё не настроено. Администратору нужно загрузить его через /setwelcome.",
                 reply_markup=mini_app_keyboard()
             )
-    await send_start_promotions(message)
 
 
 
