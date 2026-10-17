@@ -92,6 +92,8 @@ def init_db():
         campaign_cols = [r[1] for r in con.execute("PRAGMA table_info(campaigns)").fetchall()]
         if "interval_hours" not in campaign_cols:
             con.execute("ALTER TABLE campaigns ADD COLUMN interval_hours INTEGER DEFAULT 8")
+        if "placement" not in campaign_cols:
+            con.execute("ALTER TABLE campaigns ADD COLUMN placement TEXT DEFAULT 'broadcast'")
         user_cols = [r[1] for r in con.execute("PRAGMA table_info(users)").fetchall()]
         if "last_campaign_id" not in user_cols:
             con.execute("ALTER TABLE users ADD COLUMN last_campaign_id INTEGER DEFAULT 0")
@@ -271,34 +273,65 @@ async def start(message: Message):
         await message.answer_animation(
             animation2, caption=text, reply_markup=bonus_welcome_keyboard()
         )
-        return
-    if video2:
+    elif video2:
         await message.answer_video(
             video2, caption=text, reply_markup=bonus_welcome_keyboard()
         )
-        return
-
-    # Fallback for installations where the second clip has not been uploaded yet.
-    media_type = settings.get("welcome_media_type", "")
-    media_file_id = settings.get("welcome_media_file_id", "")
-    if media_file_id and media_type == "animation":
-        await message.answer_animation(
-            media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
-        )
-    elif media_file_id and media_type == "video":
-        await message.answer_video(
-            media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
-        )
-    elif media_file_id and media_type == "photo":
-        await message.answer_photo(
-            media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
-        )
     else:
-        await message.answer(
-            "Второе видео ещё не настроено. Администратору нужно загрузить его через /setwelcome.",
-            reply_markup=mini_app_keyboard()
-        )
+        # Fallback for installations where the second clip has not been uploaded yet.
+        media_type = settings.get("welcome_media_type", "")
+        media_file_id = settings.get("welcome_media_file_id", "")
+        if media_file_id and media_type == "animation":
+            await message.answer_animation(
+                media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
+            )
+        elif media_file_id and media_type == "video":
+            await message.answer_video(
+                media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
+            )
+        elif media_file_id and media_type == "photo":
+            await message.answer_photo(
+                media_file_id, caption=text, reply_markup=bonus_welcome_keyboard()
+            )
+        else:
+            await message.answer(
+                "Второе видео ещё не настроено. Администратору нужно загрузить его через /setwelcome.",
+                reply_markup=mini_app_keyboard()
+            )
+    await send_start_promotions(message)
 
+
+
+async def send_start_promotions(message: Message):
+    """Send enabled promo blocks configured for placement below the /start welcome CTA."""
+    with closing(db()) as con:
+        rows = con.execute(
+            "SELECT id,body,media_type,media_file_id,button_text,button_url "
+            "FROM campaigns WHERE enabled=1 AND COALESCE(placement,'broadcast')='start' "
+            "ORDER BY position,id"
+        ).fetchall()
+    base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+    for cid, body, media_type, file_id, button_text, button_url in rows:
+        markup = None
+        if button_text and button_url:
+            tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
+            markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=button_text, url=tracked_url)]
+            ])
+        try:
+            caption = (body or "")[:1024]
+            if media_type == "photo" and file_id:
+                await message.answer_photo(file_id, caption=caption or None, reply_markup=markup)
+            elif media_type == "video" and file_id:
+                await message.answer_video(file_id, caption=caption or None, reply_markup=markup)
+            elif body:
+                await message.answer(body[:4096], reply_markup=markup)
+            with closing(db()) as con:
+                con.execute("UPDATE campaigns SET sent_count=sent_count+1 WHERE id=?", (cid,))
+                con.commit()
+            await asyncio.sleep(0.15)
+        except Exception as exc:
+            print(f"[start-promotions] campaign_id={cid} error={type(exc).__name__}: {exc}", flush=True)
 
 
 def bonus_welcome_keyboard():
@@ -710,11 +743,12 @@ async def adm_campaigns(call: CallbackQuery):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     with closing(db()) as con:
-        rows = con.execute("SELECT id,title,enabled,interval_hours,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
+        rows = con.execute("SELECT id,title,enabled,interval_hours,sent_count,click_count,COALESCE(placement,'broadcast') FROM campaigns ORDER BY position,id").fetchall()
     kb = InlineKeyboardBuilder()
-    lines = ["📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ", "", "Текст, фото/видео, CTA-кнопки и расписание."]
-    for cid,title,enabled,interval,sent,clicks in rows:
-        lines.append(f"{'🟢' if enabled else '🔴'} #{cid} {title or 'Без названия'} — каждые {interval} ч. | отправок {sent} | кликов {clicks}")
+    lines = ["📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ", "", "Создавай рассылки по расписанию или баннеры, которые появляются под кнопкой «ЗАБРАТЬ БОНУСЫ» после /start."]
+    for cid,title,enabled,interval,sent,clicks,placement in rows:
+        where = "под /start" if placement == "start" else f"каждые {interval} ч."
+        lines.append(f"{'🟢' if enabled else '🔴'} #{cid} {title or 'Без названия'} — {where} | отправок {sent} | кликов {clicks}")
         kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'} #{cid}", callback_data=f"adm:camp_toggle:{cid}")
         kb.button(text=f"🗑 Удалить #{cid}", callback_data=f"adm:camp_delete:{cid}")
     kb.button(text="➕ Создать публикацию", callback_data="adm:camp_add")
@@ -730,7 +764,7 @@ async def adm_camp_add(call: CallbackQuery):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     admin_state[call.from_user.id] = {"action":"campaign","step":"title","data":{}}
-    await call.message.edit_text("📢 НОВАЯ ПУБЛИКАЦИЯ\n\n1/6. Название для админки:")
+    await call.message.edit_text("📢 НОВАЯ ПУБЛИКАЦИЯ\n\n1/7. Название для админки:")
     await call.answer()
 
 
@@ -741,21 +775,25 @@ async def adm_camp_toggle(call: CallbackQuery):
         return
     cid = int(call.data.rsplit(":",1)[1])
     with closing(db()) as con:
-        row = con.execute("SELECT enabled FROM campaigns WHERE id=?", (cid,)).fetchone()
+        row = con.execute("SELECT enabled,COALESCE(placement,'broadcast') FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
             await call.answer("Публикация не найдена", show_alert=True)
             return
         if int(row[0] or 0):
             con.execute("UPDATE campaigns SET enabled=0 WHERE id=?", (cid,))
-            notice = "Публикация выключена"
+            notice = "Баннер выключен" if row[1] == "start" else "Публикация выключена"
         else:
-            # Mark enablement time so the scheduler treats this as a fresh campaign
-            # and can send its first post without waiting for the previous campaign's interval.
-            con.execute(
-                "UPDATE campaigns SET enabled=1, created_at=CURRENT_TIMESTAMP, last_sent_at='' WHERE id=?",
-                (cid,)
-            )
-            notice = "Публикация включена; первая отправка ожидается в ближайшую минуту"
+            # Reset the schedule only for scheduled broadcasts. Start-placement
+            # banners are sent when a user invokes /start and need no timer.
+            if row[1] == "start":
+                con.execute("UPDATE campaigns SET enabled=1 WHERE id=?", (cid,))
+                notice = "Баннер включён: будет показываться после /start"
+            else:
+                con.execute(
+                    "UPDATE campaigns SET enabled=1, created_at=CURRENT_TIMESTAMP, last_sent_at='' WHERE id=?",
+                    (cid,)
+                )
+                notice = "Публикация включена; первая отправка ожидается в ближайшую минуту"
         con.commit()
     await call.answer(notice)
     await adm_campaigns(call)
@@ -1140,7 +1178,7 @@ async def admin_campaign_media(message: Message):
         await message.answer("Для рекламной публикации отправь фото или видео, не файл документа.")
         return
     state["step"] = "button_text"
-    await message.answer("4/6. Текст кнопки или - без кнопки:")
+    await message.answer("4/7. Текст кнопки или - без кнопки:")
 
 
 @dp.message()
@@ -1174,12 +1212,12 @@ async def admin_text(message: Message):
         if step == "title":
             d["title"] = text
             state["step"] = "body"
-            await message.answer("2/6. Текст публикации:")
+            await message.answer("2/7. Текст публикации:")
             return
         if step == "body":
             d["body"] = "" if text == "-" else text
             state["step"] = "media"
-            await message.answer("3/6. Пришли фото или видео отдельным сообщением. Для текста без медиа напиши -.")
+            await message.answer("3/7. Пришли фото или видео отдельным сообщением. Для текста без медиа напиши -.")
             return
         if step == "media":
             if text != "-":
@@ -1194,19 +1232,36 @@ async def admin_text(message: Message):
             d["button_text"] = "" if text == "-" else text[:64]
             if d["button_text"]:
                 state["step"] = "button_url"
-                await message.answer("5/6. Ссылка кнопки (https://...).")
+                await message.answer("5/7. Ссылка кнопки (https://...).")
             else:
                 d["button_url"] = ""
-                state["step"] = "interval"
-                await message.answer("6/6. Интервал в часах: 8 = 3 раза в день, 12 = 2 раза в день.")
+                state["step"] = "placement"
+                await message.answer("6/7. Где показывать публикацию?\n1 — рассылка подписчикам по расписанию\n2 — баннер под кнопкой «ЗАБРАТЬ БОНУСЫ» после /start.\nВведи 1 или 2.")
             return
         if step == "button_url":
             if not text.startswith(("https://","http://")):
                 await message.answer("Нужна ссылка http:// или https://.")
                 return
             d["button_url"] = text
+            state["step"] = "placement"
+            await message.answer("6/7. Где показывать публикацию?\n1 — рассылка подписчикам по расписанию\n2 — баннер под кнопкой «ЗАБРАТЬ БОНУСЫ» после /start.\nВведи 1 или 2.")
+            return
+        if step == "placement":
+            if text not in {"1", "2"}:
+                await message.answer("Введи 1 для рассылки по расписанию или 2 для баннера после /start.")
+                return
+            d["placement"] = "broadcast" if text == "1" else "start"
+            if d["placement"] == "start":
+                with closing(db()) as con:
+                    pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM campaigns").fetchone()[0]
+                    con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours,placement) VALUES(?,?,?,?,?,?,0,?,8,?)",
+                        (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,"start"))
+                    con.commit()
+                admin_state.pop(uid, None)
+                await message.answer("✅ Баннер сохранён и выключен. Включи его в «📢 Рекламные публикации» — он будет показываться после приветствия и кнопки «ЗАБРАТЬ БОНУСЫ» при каждом /start.", reply_markup=admin_keyboard())
+                return
             state["step"] = "interval"
-            await message.answer("6/6. Интервал в часах: 8 = 3 раза в день, 12 = 2 раза в день.")
+            await message.answer("7/7. Интервал рассылки в часах: 8 = примерно 3 раза в день, 12 = 2 раза в день.")
             return
         if step == "interval":
             if not d.get("body") and not d.get("media_file_id"):
@@ -1222,8 +1277,8 @@ async def admin_text(message: Message):
                 return
             with closing(db()) as con:
                 pos = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM campaigns").fetchone()[0]
-                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours) VALUES(?,?,?,?,?,?,0,?,?)",
-                    (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,interval))
+                con.execute("INSERT INTO campaigns(title,body,media_type,media_file_id,button_text,button_url,enabled,position,interval_hours,placement) VALUES(?,?,?,?,?,?,0,?,?,?)",
+                    (d["title"],d["body"],d.get("media_type",""),d.get("media_file_id",""),d.get("button_text",""),d.get("button_url",""),pos,interval,"broadcast"))
                 con.commit()
             admin_state.pop(uid, None)
             await message.answer("✅ Публикация сохранена и выключена. Включи её кнопкой в разделе «📢 Рекламные публикации», когда будешь готов.", reply_markup=admin_keyboard())
@@ -1703,7 +1758,7 @@ async def campaign_scheduler(bot: Bot):
         try:
             with closing(db()) as con:
                 campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
-                    FROM campaigns WHERE enabled=1 ORDER BY position,id""").fetchall()
+                    FROM campaigns WHERE enabled=1 AND COALESCE(placement,'broadcast')='broadcast' ORDER BY position,id""").fetchall()
                 users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
                 global_row = con.execute("SELECT value FROM app_settings WHERE key='last_campaign_broadcast'").fetchone()
             global_last = global_row[0] if global_row else ""
