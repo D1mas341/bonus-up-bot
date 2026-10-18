@@ -69,7 +69,7 @@ def init_db():
         """)
         # Additive migrations preserve existing partner links and offers.
         cols = [r[1] for r in con.execute("PRAGMA table_info(offers)").fetchall()]
-        for col, definition in [("geo", "TEXT DEFAULT ''"), ("promo_code", "TEXT DEFAULT ''"), ("logo_url", "TEXT DEFAULT ''")]:
+        for col, definition in [("geo", "TEXT DEFAULT ''"), ("promo_code", "TEXT DEFAULT ''"), ("logo_url", "TEXT DEFAULT ''"), ("hidden", "INTEGER DEFAULT 0")]:
             if col not in cols:
                 con.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
         con.execute("""
@@ -201,7 +201,7 @@ def offers_keyboard(category):
     with closing(db()) as con:
         rows = con.execute("""
         SELECT id,name FROM offers
-        WHERE category=? AND enabled=1
+        WHERE category=? AND enabled=1 AND COALESCE(hidden,0)=0
         ORDER BY position,id
         """, (category,)).fetchall()
     for oid, name in rows:
@@ -218,6 +218,8 @@ def admin_keyboard():
     kb.button(text="✏️ Изменить оффер", callback_data="adm:edit")
     kb.button(text="🔗 Изменить ссылку", callback_data="adm:link")
     kb.button(text="🟢/🔴 Вкл. / выкл.", callback_data="adm:toggle")
+    kb.button(text="🙈 Скрыть / восстановить", callback_data="adm:visibility")
+    kb.button(text="🗑 Удалить оффер", callback_data="adm:delete")
     kb.button(text="🏷 Промокод / логотип", callback_data="adm:promo")
     kb.button(text="🖼 Баннеры Mini App", callback_data="adm:banners")
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
@@ -230,12 +232,14 @@ def admin_keyboard():
     return kb.as_markup()
 
 
-def admin_offer_keyboard(prefix, include_cancel=True):
+def admin_offer_keyboard(prefix, include_cancel=True, visible_only=False):
     kb = InlineKeyboardBuilder()
     with closing(db()) as con:
-        rows = con.execute(
-            "SELECT id,name,enabled FROM offers ORDER BY category,position,id"
-        ).fetchall()
+        query = "SELECT id,name,enabled FROM offers"
+        if visible_only:
+            query += " WHERE COALESCE(hidden,0)=0"
+        query += " ORDER BY category,position,id"
+        rows = con.execute(query).fetchall()
     for oid, name, enabled in rows:
         mark = "🟢" if enabled else "🔴"
         kb.button(text=f"{mark} {name}", callback_data=f"{prefix}:{oid}")
@@ -600,16 +604,16 @@ async def adm_list(call: CallbackQuery):
         return
     with closing(db()) as con:
         rows = con.execute("""
-        SELECT id,category,name,enabled,position,geo
+        SELECT id,category,name,enabled,position,geo,COALESCE(hidden,0)
         FROM offers ORDER BY category,position,id
         """).fetchall()
     if not rows:
         text = "📋 Офферов пока нет."
     else:
         text = "📋 ОФФЕРЫ\n\n"
-        for oid, cat, name, enabled, pos, geo in rows:
-            mark = "🟢" if enabled else "🔴"
-            text += f"{mark} #{oid} {name} | {cat} | pos {pos}"
+        for oid, cat, name, enabled, pos, geo, hidden in rows:
+            mark = "🙈" if hidden else ("🟢" if enabled else "🔴")
+            text += f"{mark} #{oid} {name} | {cat} | pos {pos}" + (" | СКРЫТ" if hidden else "")
             if geo:
                 text += f" | {geo}"
             text += "\n"
@@ -753,6 +757,91 @@ async def adm_toggleone(call: CallbackQuery):
     else:
         await call.answer("Оффер не найден", show_alert=True)
 
+
+
+
+@dp.callback_query(F.data == "adm:visibility")
+async def adm_visibility(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        rows = con.execute("SELECT id,name,enabled,COALESCE(hidden,0) FROM offers ORDER BY category,position,id").fetchall()
+    kb = InlineKeyboardBuilder()
+    for oid,name,enabled,hidden in rows:
+        mark = "🙈" if hidden else ("🟢" if enabled else "🔴")
+        action = "Восстановить" if hidden else "Скрыть"
+        kb.button(text=f"{mark} {action}: {name}"[:64], callback_data=f"adm:visibilityone:{oid}")
+    kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
+    kb.adjust(1)
+    await call.message.edit_text("🙈 СКРЫТИЕ / ВОССТАНОВЛЕНИЕ\n\nСкрытый оффер не показывается в Mini App. Данные, ссылка, промокод и логотип сохраняются.", reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:visibilityone:"))
+async def adm_visibilityone(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        row = con.execute("SELECT name,COALESCE(hidden,0) FROM offers WHERE id=?", (oid,)).fetchone()
+        if row:
+            new_hidden = 0 if row[1] else 1
+            con.execute("UPDATE offers SET hidden=? WHERE id=?", (new_hidden, oid))
+            con.commit()
+    if not row:
+        await call.answer("Оффер не найден", show_alert=True)
+        return
+    await call.answer(f"{row[0]}: {'скрыт' if new_hidden else 'восстановлен'}", show_alert=True)
+    await adm_visibility(call)
+
+
+@dp.callback_query(F.data == "adm:delete")
+async def adm_delete(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await call.message.edit_text("🗑 Выбери оффер для окончательного удаления:", reply_markup=admin_offer_keyboard("adm:deleteone"))
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:deleteone:"))
+async def adm_deleteone(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        row = con.execute("SELECT name FROM offers WHERE id=?", (oid,)).fetchone()
+    if not row:
+        await call.answer("Оффер не найден", show_alert=True)
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Да, удалить навсегда", callback_data=f"adm:deleteconfirm:{oid}")
+    kb.button(text="↩️ Отмена", callback_data="adm:delete")
+    kb.adjust(1)
+    await call.message.edit_text(f"⚠️ Удалить оффер «{row[0]}» навсегда?\n\nБудут удалены карточка, партнёрская ссылка, промокод и логотип. Это действие нельзя отменить.", reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:deleteconfirm:"))
+async def adm_deleteconfirm(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        row = con.execute("SELECT name FROM offers WHERE id=?", (oid,)).fetchone()
+        if row:
+            con.execute("DELETE FROM clicks WHERE offer_id=?", (oid,))
+            con.execute("DELETE FROM offers WHERE id=?", (oid,))
+            con.commit()
+    if not row:
+        await call.answer("Оффер уже удалён или не найден", show_alert=True)
+        return
+    await call.answer(f"Удалён: {row[0]}", show_alert=True)
+    await call.message.edit_text(f"🗑 Оффер «{row[0]}» удалён.", reply_markup=admin_keyboard())
 
 
 @dp.callback_query(F.data == "adm:users")
@@ -1165,7 +1254,7 @@ async def adm_promo(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    await call.message.edit_text("🏷 Выбери оффер для настройки промокода или логотипа:", reply_markup=admin_offer_keyboard("adm:promoon"))
+    await call.message.edit_text("🏷 Выбери оффер для настройки промокода или логотипа:", reply_markup=admin_offer_keyboard("adm:promoon", visible_only=True))
     await call.answer()
 
 
@@ -2141,7 +2230,7 @@ async def api_offers(request):
     with closing(db()) as con:
         rows = con.execute("""
             SELECT id,category,name,description,bonus,url,promo_code,logo_url
-            FROM offers WHERE enabled=1
+            FROM offers WHERE enabled=1 AND COALESCE(hidden,0)=0
             ORDER BY category,
                 CASE
                     WHEN lower(name) LIKE '%1win%' THEN 0
