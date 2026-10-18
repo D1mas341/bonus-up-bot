@@ -127,6 +127,17 @@ def init_db():
         )
         """)
         con.execute("""
+        CREATE TABLE IF NOT EXISTS revenue_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            partner TEXT NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'EUR',
+            period TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        con.execute("""
         CREATE TABLE IF NOT EXISTS banners (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL DEFAULT '',
@@ -208,6 +219,7 @@ def admin_keyboard():
     kb.button(text="🖼 Баннеры Mini App", callback_data="adm:banners")
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
+    kb.button(text="📈 Аналитика и доход", callback_data="adm:analytics")
     kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
     kb.button(text="✍️ Разовая текстовая рассылка", callback_data="adm:text_broadcast")
     kb.button(text="👥 Пользователи", callback_data="adm:users")
@@ -984,6 +996,78 @@ async def adm_camp_send(call: CallbackQuery):
     )
 
 
+@dp.callback_query(F.data == "adm:analytics")
+async def adm_analytics(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        today_users = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
+        offer_clicks = con.execute("SELECT COUNT(*) FROM clicks").fetchone()[0]
+        offer_rows = con.execute("""
+            SELECT o.name, COUNT(c.id) AS clicks
+            FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
+            GROUP BY o.id ORDER BY clicks DESC, o.position, o.id
+        """).fetchall()
+        campaign_rows = con.execute("SELECT title,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
+        revenue_rows = con.execute("SELECT currency,COALESCE(SUM(amount),0) FROM revenue_entries GROUP BY currency ORDER BY currency").fetchall()
+        partner_rows = con.execute("SELECT partner,currency,COALESCE(SUM(amount),0),COUNT(*) FROM revenue_entries GROUP BY partner,currency ORDER BY partner,currency").fetchall()
+    lines = [
+        "📈 АНАЛИТИКА И ДОХОД", "",
+        f"👥 Всего пользователей: {total_users}",
+        f"🆕 Новых сегодня (UTC): {today_users}",
+        f"🔗 Переходов по ссылкам офферов: {offer_clicks}", "",
+        "🎁 ПЕРЕХОДЫ ПО ОФФЕРАМ:"
+    ]
+    lines.extend([f"• {name}: {count}" for name,count in offer_rows] or ["Пока нет данных по офферам."])
+    lines += ["", "📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ:"]
+    lines.extend([f"• {title or 'Без названия'}: отправок {sent}, нажатий {clicks}" for title,sent,clicks in campaign_rows] or ["Публикаций пока нет."])
+    lines += ["", "💰 ДОХОД, ЗАНЕСЁННЫЙ ВРУЧНУЮ:"]
+    lines.extend([f"• {currency}: {amount:.2f}" for currency,amount in revenue_rows] or ["Пока доход не добавлен."])
+    if partner_rows:
+        lines += ["", "ПО ПАРТНЁРАМ:"]
+        lines.extend([f"• {partner} — {amount:.2f} {currency} ({count} запис.)" for partner,currency,amount,count in partner_rows])
+    lines += ["", "Доход пока вводится вручную из партнёрских кабинетов. Автосинхронизация возможна, если партнёрка предоставляет подходящий API или отчёт."]
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить доход", callback_data="adm:revenue_add")
+    kb.button(text="📒 История доходов", callback_data="adm:revenue_history")
+    kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
+    kb.adjust(1)
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:revenue_add")
+async def adm_revenue_add(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    admin_state[call.from_user.id] = {"action":"revenue_add","step":"partner","data":{}}
+    await call.message.edit_text("💰 ДОБАВИТЬ ДОХОД\n\n1/5. Название партнёрской программы (например, 1xPartners):\nДля отмены напиши «отмена».")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:revenue_history")
+async def adm_revenue_history(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        rows = con.execute("SELECT id,partner,amount,currency,period,note,created_at FROM revenue_entries ORDER BY id DESC LIMIT 20").fetchall()
+    lines = ["📒 ПОСЛЕДНИЕ ЗАПИСИ ДОХОДА", ""]
+    for rid,partner,amount,currency,period,note,created in rows:
+        lines.append(f"#{rid} {partner}: {amount:.2f} {currency}" + (f" | период: {period}" if period else "") + (f" | {note}" if note else "") + f"\n  {created}")
+    if not rows:
+        lines.append("Записей пока нет.")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить доход", callback_data="adm:revenue_add")
+    kb.button(text="⬅️ К аналитике", callback_data="adm:analytics")
+    kb.adjust(1)
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+    await call.answer()
+
+
 @dp.callback_query(F.data == "adm:clicks")
 async def adm_clicks(call: CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -997,9 +1081,9 @@ async def adm_clicks(call: CallbackQuery):
         GROUP BY o.id
         ORDER BY COUNT(c.id) DESC, o.position, o.id
         """).fetchall()
-    text = "📊 СТАТИСТИКА\n\n"
+    text = "📊 ПЕРЕХОДЫ ПО ПАРТНЁРСКИМ ССЫЛКАМ\n\n"
     text += "\n".join(f"• {name}: {count}" for name, count in rows) or "Пока нет данных."
-    text += "\n\n⚠️ Считаются открытия карточки оффера. Telegram не передаёт боту факт нажатия внешней ссылки."
+    text += "\n\nСчитаются переходы через ссылку-редирект BONUS UP. Открытия карточек без перехода здесь не учитываются."
     await call.message.edit_text(text, reply_markup=admin_keyboard())
     await call.answer()
 
@@ -1437,6 +1521,54 @@ async def admin_text(message: Message):
             reply_markup=kb.as_markup()
         )
         return
+
+    if action == "revenue_add":
+        d = state.setdefault("data", {})
+        if text.lower() in {"отмена", "cancel"}:
+            admin_state.pop(uid, None)
+            await message.answer("❌ Добавление дохода отменено.", reply_markup=admin_keyboard())
+            return
+        if step == "partner":
+            d["partner"] = text[:100]
+            state["step"] = "amount"
+            await message.answer("2/5. Сумма дохода (например, 125.50):")
+            return
+        if step == "amount":
+            try:
+                amount = float(text.replace(",", ".").replace(" ", ""))
+                if amount < 0 or amount > 1_000_000_000:
+                    raise ValueError
+            except ValueError:
+                await message.answer("Введи корректную неотрицательную сумму, например 125.50.")
+                return
+            d["amount"] = amount
+            state["step"] = "currency"
+            await message.answer("3/5. Валюта (например, EUR, USD, RUB):")
+            return
+        if step == "currency":
+            currency = text.strip().upper()
+            if not currency.isalpha() or not (3 <= len(currency) <= 5):
+                await message.answer("Введи код валюты, например EUR, USD или RUB.")
+                return
+            d["currency"] = currency
+            state["step"] = "period"
+            await message.answer("4/5. Период отчёта (например, 01–15.10.2026) или - если не нужен:")
+            return
+        if step == "period":
+            d["period"] = "" if text == "-" else text[:100]
+            state["step"] = "note"
+            await message.answer("5/5. Примечание (например, доход по кабинету за неделю) или -:")
+            return
+        if step == "note":
+            d["note"] = "" if text == "-" else text[:250]
+            with closing(db()) as con:
+                con.execute("INSERT INTO revenue_entries(partner,amount,currency,period,note) VALUES(?,?,?,?,?)",
+                            (d["partner"],d["amount"],d["currency"],d["period"],d["note"]))
+                con.commit()
+            partner, amount, currency = d["partner"], d["amount"], d["currency"]
+            admin_state.pop(uid, None)
+            await message.answer(f"✅ Доход сохранён: {partner} — {amount:.2f} {currency}.\nОткрой «📈 Аналитика и доход», чтобы увидеть сводку.", reply_markup=admin_keyboard())
+            return
 
     if action == "campaign":
         d = state["data"]
