@@ -147,12 +147,15 @@ def init_db():
             url TEXT NOT NULL DEFAULT '',
             enabled INTEGER DEFAULT 1,
             position INTEGER DEFAULT 0,
-            clicks INTEGER DEFAULT 0
+            clicks INTEGER DEFAULT 0,
+            section TEXT NOT NULL DEFAULT 'casino'
         )
         """)
         banner_cols = [r[1] for r in con.execute("PRAGMA table_info(banners)").fetchall()]
         if "clicks" not in banner_cols:
             con.execute("ALTER TABLE banners ADD COLUMN clicks INTEGER DEFAULT 0")
+        if "section" not in banner_cols:
+            con.execute("ALTER TABLE banners ADD COLUMN section TEXT NOT NULL DEFAULT 'casino'")
 
         # Banner records are managed only through the admin panel.
         # Do not auto-create or re-enable 1win on startup.
@@ -1234,15 +1237,16 @@ async def adm_banners(call: CallbackQuery):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     with closing(db()) as con:
-        rows = con.execute("SELECT id,title,enabled,position,clicks FROM banners ORDER BY position,id").fetchall()
+        rows = con.execute("SELECT id,title,enabled,position,clicks,section FROM banners ORDER BY section,position,id").fetchall()
     kb = InlineKeyboardBuilder()
-    lines = ["🖼 БАННЕРЫ MINI APP", ""]
+    lines = ["🖼 БАННЕРЫ MINI APP", "", "🎰 Игры · ⚽ Спорт · 🌐 Оба раздела"]
     if not rows:
         lines.append("Баннеров пока нет.")
-    for bid,title,enabled,pos,clicks in rows:
+    for bid,title,enabled,pos,clicks,section in rows:
         banner_title = (title or "Без названия").strip()
         short_title = banner_title[:23] + ("…" if len(banner_title) > 23 else "")
-        lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {banner_title} | позиция {pos} | переходы {clicks}")
+        section_label = {"casino":"🎰 Игры","bets":"⚽ Спорт","both":"🌐 Оба"}.get(section,"🎰 Игры")
+        lines.append(f"{'🟢' if enabled else '🔴'} #{bid} {banner_title} | {section_label} | позиция {pos} | переходы {clicks}")
         kb.button(text=f"{'🔴 Выключить' if enabled else '🟢 Включить'}: {short_title}", callback_data=f"adm:bannertoggle:{bid}")
         kb.button(text=f"✏️ Изменить: {short_title}", callback_data=f"adm:banneredit:{bid}")
         kb.button(text=f"🗑 Удалить: {short_title}", callback_data=f"adm:bannerdelete:{bid}")
@@ -1284,6 +1288,7 @@ async def adm_banneredit(call: CallbackQuery):
         ("image_url","🖼 Изображение"),
         ("url","🔗 Партнёрская ссылка"),
         ("position","↕️ Позиция в карусели"),
+        ("section","🎯 Раздел: Игры / Спорт / Оба"),
     ]:
         kb.button(text=label, callback_data=f"adm:bannereditfield:{bid}:{field}")
     kb.button(text="⬅️ К списку баннеров", callback_data="adm:banners")
@@ -1307,6 +1312,7 @@ async def adm_bannereditfield(call: CallbackQuery):
         "image_url": "Отправь новое изображение баннера фото/файлом JPG/PNG или прямую HTTPS-ссылку. Текущее изображение заменится.",
         "url": "Отправь новую партнёрскую ссылку (https://...).",
         "position": "Отправь новую позицию баннера в карусели (целое число, начиная с 1).",
+        "section": "Выбери раздел баннера: отправь casino для «Игры», bets для «Спорт» или both для показа в обоих разделах.",
     }
     if field not in prompts:
         await call.answer("Неизвестное поле.", show_alert=True)
@@ -1371,7 +1377,7 @@ async def adm_banneradd(call: CallbackQuery):
     admin_state[call.from_user.id] = {"action":"banner","step":"title","data":{}}
     await call.message.edit_text(
         "➕ НОВЫЙ БАННЕР В КАРУСЕЛЬ MINI APP\n\n"
-        "1/4. Название для админки (его видишь только ты):"
+        "1/5. Название для админки (его видишь только ты):"
     )
     await call.answer()
 
@@ -1758,6 +1764,17 @@ async def admin_text(message: Message):
             admin_state.pop(uid, None)
             await message.answer("✅ Партнёрская ссылка баннера обновлена.", reply_markup=admin_keyboard())
             return
+        if step == "section":
+            section = text.strip().lower()
+            if section not in {"casino","bets","both"}:
+                await message.answer("Отправь casino для «Игры», bets для «Спорт» или both для обоих разделов.")
+                return
+            with closing(db()) as con:
+                con.execute("UPDATE banners SET section=? WHERE id=?", (section,bid))
+                con.commit()
+            admin_state.pop(uid, None)
+            await message.answer("✅ Раздел баннера обновлён.", reply_markup=admin_keyboard())
+            return
         if step == "position":
             try:
                 pos = int(text)
@@ -1786,8 +1803,17 @@ async def admin_text(message: Message):
     if action == "banner":
         if step == "title":
             state["data"]["title"] = text
+            state["step"] = "section"
+            await message.answer("2/5. Выбери раздел: отправь casino — Игры, bets — Спорт, both — оба раздела.")
+            return
+        if step == "section":
+            section = text.strip().lower()
+            if section not in {"casino","bets","both"}:
+                await message.answer("Отправь casino, bets или both.")
+                return
+            state["data"]["section"] = section
             state["step"] = "image_url"
-            await message.answer("2/4. Отправь баннер фотографией или файлом JPG/PNG. Можно также прислать прямую HTTPS-ссылку на изображение.")
+            await message.answer("3/5. Отправь баннер фотографией или файлом JPG/PNG. Можно также прислать прямую HTTPS-ссылку на изображение.")
             return
         if step == "image_url":
             if not text.startswith(("https://", "http://")):
@@ -1795,7 +1821,7 @@ async def admin_text(message: Message):
                 return
             state["data"]["image_url"] = text
             state["step"] = "url"
-            await message.answer("3/4. Партнёрская ссылка (https://...), куда переходить при нажатии на баннер:")
+            await message.answer("4/5. Партнёрская ссылка (https://...), куда переходить при нажатии на баннер:")
             return
         if step == "url":
             if not text.startswith(("https://", "http://")):
@@ -1803,7 +1829,7 @@ async def admin_text(message: Message):
                 return
             state["data"]["url"] = text
             state["step"] = "position"
-            await message.answer("4/4. Позиция в карусели (число, например 1):")
+            await message.answer("5/5. Позиция в карусели (число, например 1):")
             return
         if step == "position":
             try:
@@ -1819,8 +1845,8 @@ async def admin_text(message: Message):
             with closing(db()) as con:
                 # Position is 1-based. Shift existing banners down so position 1 really appears first.
                 con.execute("UPDATE banners SET position=position+1 WHERE position>=?", (pos,))
-                con.execute("INSERT INTO banners(title,text,image_url,button_text,url,enabled,position) VALUES(?,?,?,?,?,1,?)",
-                            (d["title"],"",d["image_url"],"",d["url"],pos))
+                con.execute("INSERT INTO banners(title,text,image_url,button_text,url,enabled,position,section) VALUES(?,?,?,?,?,1,?,?)",
+                            (d["title"],"",d["image_url"],"",d["url"],pos,d.get("section","casino")))
                 con.commit()
             admin_state.pop(uid, None)
             await message.answer("✅ Баннер добавлен и включён в карусель Mini App. Нажатие на него ведёт по партнёрской ссылке. Открой Mini App заново для проверки.", reply_markup=admin_keyboard())
@@ -2065,9 +2091,10 @@ const cp=document.getElementById("modalCopy");if(cp)cp.onclick=()=>copyPromo(x.p
 function closeModal(){document.getElementById("modalBackdrop").classList.remove("open");document.body.style.overflow="";selectedId=null}
 document.getElementById("modalBackdrop").addEventListener("click",e=>{if(e.target.id==="modalBackdrop")closeModal()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
 async function copyPromo(v){try{if(navigator.clipboard&&navigator.clipboard.writeText)await navigator.clipboard.writeText(v);else{const el=document.createElement("textarea");el.value=v;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove()}if(tg&&tg.showPopup)tg.showPopup({title:t("copiedTitle"),message:t("copied"),buttons:[{type:"ok"}]})}catch(e){if(tg&&tg.showAlert)tg.showAlert(t("copyFailed")+v)}}
-async function load(){try{const r=await fetch("/api/offers",{cache:"no-store"});all=await r.json();const br=await fetch("/api/banners",{cache:"no-store"});const banners=br.ok?await br.json():[];renderBanners(banners);render("casino")}catch(e){document.getElementById("offers").innerHTML=\'<div class="empty">Не удалось загрузить предложения.</div>\'}}
+async function load(){try{const r=await fetch("/api/offers",{cache:"no-store"});all=await r.json();renderBanners(await fetchBanners("casino"));render("casino")}catch(e){document.getElementById("offers").innerHTML='<div class="empty">Не удалось загрузить предложения.</div>'}}
+async function fetchBanners(section){try{const r=await fetch("/api/banners?section="+encodeURIComponent(section),{cache:"no-store"});return r.ok?await r.json():[]}}
 function renderBanners(items){const box=document.getElementById("promoBanner"),dots=document.getElementById("bannerDots");if(!items.length){dots.innerHTML="";box.style.display="none";return}box.style.display="block";let idx=0,timer=null,sx=0;const INTERVAL=5000;function show(){const b=items[idx];box.innerHTML='<a class="banner-image-link" href="/go/banner/'+Number(b.id)+'" aria-label="Открыть предложение"><img class="banner-backdrop" src="'+esc(b.image_url||"") +'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"") +'" alt="" loading="lazy"></a>';dots.innerHTML=items.map((b,i)=>'<button class="banner-dot '+(i===idx?'banner-dot-active':'')+'" aria-label="Баннер '+(i+1)+'" data-index="'+i+'"><span class="banner-dot-fill"></span></button>').join("");dots.querySelectorAll("button").forEach(btn=>btn.onclick=()=>{idx=Number(btn.dataset.index);show();restart()})}function stop(){if(timer){clearInterval(timer);timer=null}dots.querySelectorAll(".banner-dot").forEach(dot=>dot.classList.remove("banner-dot-running"))}function restart(){stop();if(items.length>1){const active=dots.querySelector(".banner-dot-active");if(active){active.style.setProperty("--banner-duration",(INTERVAL/1000)+"s");void active.offsetWidth;active.classList.add("banner-dot-running")}timer=setInterval(()=>{idx=(idx+1)%items.length;show();const next=dots.querySelector(".banner-dot-active");if(next){next.style.setProperty("--banner-duration",(INTERVAL/1000)+"s");void next.offsetWidth;next.classList.add("banner-dot-running")}},INTERVAL)}}box.ontouchstart=e=>{sx=e.touches[0].clientX;stop()};box.ontouchend=e=>{const dx=e.changedTouches[0].clientX-sx;if(Math.abs(dx)>45){idx=(idx+(dx<0?1:-1)+items.length)%items.length;show()}restart()};box.onmouseenter=stop;box.onmouseleave=restart;show();restart()}
-document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");render(b.dataset.cat)});load();document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")load()});
+document.querySelectorAll(".tab").forEach(b=>b.onclick=async()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");const cat=b.dataset.cat;render(cat);renderBanners(await fetchBanners(cat))});load();document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")load()});
 </script></body></html>'''
 
 async def mini_app(request):
@@ -2093,12 +2120,16 @@ async def api_offers(request):
     ], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 async def api_banners(request):
+    section = request.query.get("section", "casino").strip().lower()
+    if section not in {"casino", "bets"}:
+        section = "casino"
     with closing(db()) as con:
         rows = con.execute("""
             SELECT id,title,text,image_url,button_text,url
-            FROM banners WHERE enabled=1
+            FROM banners
+            WHERE enabled=1 AND (section=? OR section='both')
             ORDER BY CASE WHEN position<=0 THEN 2147483647 ELSE position END, id
-        """).fetchall()
+        """, (section,)).fetchall()
     return web.json_response([{"id":r[0],"title":r[1],"text":r[2],"image_url":r[3],"button_text":r[4],"url":r[5]} for r in rows], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 def is_partner_url(value):
