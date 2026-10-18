@@ -1061,11 +1061,62 @@ async def adm_revenue_history(call: CallbackQuery):
     if not rows:
         lines.append("Записей пока нет.")
     kb = InlineKeyboardBuilder()
+    for rid,partner,amount,currency,period,note,created in rows:
+        kb.button(text=f"🗑 Удалить #{rid} · {partner[:18]}", callback_data=f"adm:revenue_del_confirm:{rid}")
     kb.button(text="➕ Добавить доход", callback_data="adm:revenue_add")
     kb.button(text="⬅️ К аналитике", callback_data="adm:analytics")
     kb.adjust(1)
     await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:revenue_del_confirm:"))
+async def adm_revenue_del_confirm(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    rid = int(call.data.rsplit(":", 1)[1])
+    with closing(db()) as con:
+        row = con.execute("SELECT partner,amount,currency FROM revenue_entries WHERE id=?", (rid,)).fetchone()
+    if not row:
+        await call.answer("Запись уже удалена или не найдена.", show_alert=True)
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Да, удалить", callback_data=f"adm:revenue_del_yes:{rid}")
+    kb.button(text="↩️ Отмена", callback_data="adm:revenue_history")
+    kb.adjust(1)
+    await call.message.edit_text(
+        f"Удалить запись дохода?\n\n#{rid} {row[0]} — {row[1]:.2f} {row[2]}\n\nЭто действие нельзя отменить.",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:revenue_del_yes:"))
+async def adm_revenue_del_yes(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    rid = int(call.data.rsplit(":", 1)[1])
+    with closing(db()) as con:
+        cur = con.execute("DELETE FROM revenue_entries WHERE id=?", (rid,))
+        con.commit()
+        deleted = cur.rowcount
+    await call.answer("Запись удалена." if deleted else "Запись не найдена.", show_alert=True)
+    with closing(db()) as con:
+        rows = con.execute("SELECT id,partner,amount,currency,period,note,created_at FROM revenue_entries ORDER BY id DESC LIMIT 20").fetchall()
+    lines = ["📒 ПОСЛЕДНИЕ ЗАПИСИ ДОХОДА", ""]
+    for rid,partner,amount,currency,period,note,created in rows:
+        lines.append(f"#{rid} {partner}: {amount:.2f} {currency}" + (f" | период: {period}" if period else "") + (f" | {note}" if note else "") + f"\n  {created}")
+    if not rows:
+        lines.append("Записей пока нет.")
+    kb = InlineKeyboardBuilder()
+    for rid,partner,amount,currency,period,note,created in rows:
+        kb.button(text=f"🗑 Удалить #{rid} · {partner[:18]}", callback_data=f"adm:revenue_del_confirm:{rid}")
+    kb.button(text="➕ Добавить доход", callback_data="adm:revenue_add")
+    kb.button(text="⬅️ К аналитике", callback_data="adm:analytics")
+    kb.adjust(1)
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
 
 
 @dp.callback_query(F.data == "adm:clicks")
