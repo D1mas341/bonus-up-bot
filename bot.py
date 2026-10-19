@@ -2,8 +2,12 @@ import os
 import sqlite3
 import asyncio
 import base64
+import hashlib
+import hmac
+import json
+import time
 from io import BytesIO
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
@@ -29,6 +33,61 @@ if not TOKEN:
 
 dp = Dispatcher()
 admin_state = {}
+
+
+def is_blocked(user_id: int) -> bool:
+    if not user_id or is_admin(user_id):
+        return False
+    with closing(db()) as con:
+        return con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (int(user_id),)).fetchone() is not None
+
+
+@dp.update.outer_middleware()
+async def enforce_user_block(handler, event, data):
+    user = None
+    if getattr(event, "message", None):
+        user = event.message.from_user
+    elif getattr(event, "callback_query", None):
+        user = event.callback_query.from_user
+    if user and is_blocked(user.id):
+        if getattr(event, "callback_query", None):
+            await event.callback_query.answer("⛔ Доступ к BONUS UP заблокирован.", show_alert=True)
+        elif getattr(event, "message", None):
+            await event.message.answer("⛔ Доступ к BONUS UP заблокирован.")
+        return None
+    return await handler(event, data)
+
+
+def validate_webapp_init_data(init_data: str):
+    if not init_data or not TOKEN:
+        return None
+    try:
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        received_hash = pairs.pop("hash", "")
+        if not received_hash:
+            return None
+        check_string = "\\n".join(f"{key}={value}" for key, value in sorted(pairs.items()))
+        secret_key = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
+        expected = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, received_hash):
+            return None
+        auth_date = int(pairs.get("auth_date", "0"))
+        if auth_date <= 0 or abs(int(time.time()) - auth_date) > 86400:
+            return None
+        user_id = int(json.loads(pairs.get("user", "{}")).get("id", 0))
+        return user_id or None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def webapp_access_denied(request):
+    init_data = request.headers.get("X-Telegram-Init-Data", "") or request.query.get("tgWebAppData", "")
+    user_id = validate_webapp_init_data(init_data)
+    if not user_id:
+        return web.json_response({"error": "telegram_auth_required"}, status=401)
+    if is_blocked(user_id):
+        return web.json_response({"error": "access_blocked"}, status=403)
+    return None
 
 
 def db():
@@ -57,6 +116,15 @@ def init_db():
             first_name TEXT,
             source TEXT DEFAULT '',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS blocked_users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT DEFAULT '',
+            first_name TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            blocked_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
         con.execute("""
@@ -227,7 +295,7 @@ def admin_keyboard():
     kb.button(text="📈 Аналитика и доход", callback_data="adm:analytics")
     kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
     kb.button(text="✍️ Разовая текстовая рассылка", callback_data="adm:text_broadcast")
-    kb.button(text="👥 Пользователи", callback_data="adm:users")
+    kb.button(text="👥 Пользователи / блокировка", callback_data="adm:users")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -852,8 +920,113 @@ async def adm_users(call: CallbackQuery):
     with closing(db()) as con:
         total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-    await call.message.edit_text(f"👥 ПОЛЬЗОВАТЕЛИ\n\nВсего уникальных: {total}\nНовых сегодня (UTC): {today}", reply_markup=admin_keyboard())
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔎 Найти / заблокировать по ID", callback_data="adm:user_search")],[InlineKeyboardButton(text="🚫 Чёрный список", callback_data="adm:blocked_list")],[InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="adm:home")]])
+    await call.message.edit_text(f"👥 ПОЛЬЗОВАТЕЛИ\\n\\nВсего уникальных: {total}\\nНовых сегодня (UTC): {today}\\n\\nПолная блокировка по Telegram ID.", reply_markup=kb)
     await call.answer()
+
+
+@dp.callback_query(F.data == "adm:user_search")
+async def adm_user_search(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    admin_state[call.from_user.id] = {"action": "user_search_id"}
+    await call.message.edit_text("🔎 Отправь числовой Telegram ID пользователя.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]]))
+    await call.answer()
+
+
+@dp.callback_query(F.data == "adm:blocked_list")
+async def adm_blocked_list(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        rows = con.execute("SELECT user_id,username,first_name FROM blocked_users ORDER BY blocked_at DESC LIMIT 50").fetchall()
+    kb = InlineKeyboardBuilder()
+    for uid, username, first_name in rows:
+        kb.button(text=f"🔓 {first_name or username or uid} · {uid}"[:64], callback_data=f"adm:unblock:{uid}")
+    kb.button(text="⬅️ К пользователям", callback_data="adm:users")
+    kb.adjust(1)
+    await call.message.edit_text("🚫 ЧЁРНЫЙ СПИСОК\\n\\nВыбери пользователя, чтобы восстановить доступ.", reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:unblock:"))
+async def adm_unblock(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uid = int(call.data.rsplit(":", 1)[1])
+    with closing(db()) as con:
+        con.execute("DELETE FROM blocked_users WHERE user_id=?", (uid,))
+        con.commit()
+    await call.answer(f"Доступ восстановлен: {uid}", show_alert=True)
+    await adm_blocked_list(call)
+
+
+@dp.callback_query(F.data.startswith("adm:blockconfirm:"))
+async def adm_block_confirm(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uid = int(call.data.rsplit(":", 1)[1])
+    if is_admin(uid):
+        await call.answer("Нельзя блокировать администратора.", show_alert=True)
+        return
+    with closing(db()) as con:
+        row = con.execute("SELECT username,first_name FROM users WHERE user_id=?", (uid,)).fetchone()
+        con.execute("INSERT INTO blocked_users(user_id,username,first_name,reason) VALUES(?,?,?,'admin') ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,first_name=excluded.first_name,reason='admin',blocked_at=CURRENT_TIMESTAMP", (uid, (row[0] or "") if row else "", (row[1] or "") if row else ""))
+        con.commit()
+    await call.answer("Пользователь заблокирован", show_alert=True)
+    await call.message.edit_text(f"⛔ Telegram ID {uid} заблокирован в боте и Mini App.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚫 Чёрный список", callback_data="adm:blocked_list")],[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]]))
+
+
+@dp.callback_query(F.data.startswith("adm:block:"))
+async def adm_block_preview(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uid = int(call.data.rsplit(":", 1)[1])
+    if is_admin(uid):
+        await call.answer("Нельзя блокировать администратора.", show_alert=True)
+        return
+    with closing(db()) as con:
+        row = con.execute("SELECT username,first_name FROM users WHERE user_id=?", (uid,)).fetchone()
+        already = con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (uid,)).fetchone()
+    if not row:
+        await call.answer("ID не найден. Пользователь должен хотя бы раз запустить бота.", show_alert=True)
+        return
+    if already:
+        await call.answer("Уже заблокирован.", show_alert=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⛔ Да, заблокировать", callback_data=f"adm:blockconfirm:{uid}")],[InlineKeyboardButton(text="↩️ Отмена", callback_data="adm:users")]])
+    await call.message.edit_text(f"Заблокировать Telegram ID {uid}?\\n\\nИмя: {row[1] or '—'}\\nUsername: @{row[0] or '—'}\\n\\nДоступ к боту и Mini App будет запрещён.", reply_markup=kb)
+    await call.answer()
+
+
+@dp.message(lambda message: admin_state.get(message.from_user.id, {}).get("action") == "user_search_id")
+async def adm_user_search_result(message: Message):
+    value = (message.text or "").strip()
+    if not value.isdigit():
+        await message.answer("Отправь числовой Telegram ID.")
+        return
+    uid = int(value)
+    if is_admin(uid):
+        admin_state.pop(message.from_user.id, None)
+        await message.answer("Это ID администратора — блокировка запрещена.", reply_markup=admin_keyboard())
+        return
+    with closing(db()) as con:
+        row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE user_id=?", (uid,)).fetchone()
+        blocked = con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (uid,)).fetchone()
+    admin_state.pop(message.from_user.id, None)
+    if not row:
+        await message.answer("ID не найден в базе. Пользователь должен хотя бы раз нажать /start.", reply_markup=admin_keyboard())
+        return
+    _, username, first_name, created_at, source = row
+    action = f"adm:unblock:{uid}" if blocked else f"adm:block:{uid}"
+    label = "🔓 Разблокировать" if blocked else "⛔ Заблокировать"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=action)],[InlineKeyboardButton(text="🔎 Новый поиск", callback_data="adm:user_search")],[InlineKeyboardButton(text="🚫 Чёрный список", callback_data="adm:blocked_list")],[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]])
+    await message.answer(f"👤 ПОЛЬЗОВАТЕЛЬ\\n\\nID: {uid}\\nИмя: {first_name or '—'}\\nUsername: @{username or '—'}\\nЗарегистрирован: {created_at}\\nИсточник: {source or '—'}\\nСтатус: {'⛔ ЗАБЛОКИРОВАН' if blocked else '🟢 Активен'}", reply_markup=kb)
 
 
 @dp.callback_query(F.data == "adm:text_broadcast")
@@ -2180,8 +2353,8 @@ const cp=document.getElementById("modalCopy");if(cp)cp.onclick=()=>copyPromo(x.p
 function closeModal(){document.getElementById("modalBackdrop").classList.remove("open");document.body.style.overflow="";selectedId=null}
 document.getElementById("modalBackdrop").addEventListener("click",e=>{if(e.target.id==="modalBackdrop")closeModal()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
 async function copyPromo(v){try{if(navigator.clipboard&&navigator.clipboard.writeText)await navigator.clipboard.writeText(v);else{const el=document.createElement("textarea");el.value=v;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove()}if(tg&&tg.showPopup)tg.showPopup({title:t("copiedTitle"),message:t("copied"),buttons:[{type:"ok"}]})}catch(e){if(tg&&tg.showAlert)tg.showAlert(t("copyFailed")+v)}}
-async function load(){try{const r=await fetch("/api/offers",{cache:"no-store"});all=await r.json();renderBanners(await fetchBanners("casino"));render("casino")}catch(e){document.getElementById("offers").innerHTML='<div class="empty">Не удалось загрузить предложения.</div>'}}
-async function fetchBanners(section){try{const r=await fetch("/api/banners?section="+encodeURIComponent(section),{cache:"no-store"});return r.ok?await r.json():[]}catch(e){return []}}
+async function load(){try{const r=await fetch("/api/offers",{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});all=await r.json();renderBanners(await fetchBanners("casino"));render("casino")}catch(e){document.getElementById("offers").innerHTML='<div class="empty">Не удалось загрузить предложения.</div>'}}
+async function fetchBanners(section){try{const r=await fetch("/api/banners?section="+encodeURIComponent(section),{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});return r.ok?await r.json():[]}catch(e){return []}}
 let bannerTimer=null;
 function renderBanners(items){
  const box=document.getElementById("promoBanner"),dots=document.getElementById("bannerDots");
@@ -2227,6 +2400,9 @@ async def mini_app(request):
     return web.Response(text=MINI_APP_HTML, content_type="text/html", headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache", "Expires": "0"})
 
 async def api_offers(request):
+    denied = webapp_access_denied(request)
+    if denied:
+        return denied
     with closing(db()) as con:
         rows = con.execute("""
             SELECT id,category,name,description,bonus,url,promo_code,logo_url
@@ -2246,6 +2422,9 @@ async def api_offers(request):
     ], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 async def api_banners(request):
+    denied = webapp_access_denied(request)
+    if denied:
+        return denied
     section = request.query.get("section", "casino").strip().lower()
     if section not in {"casino", "bets"}:
         section = "casino"
