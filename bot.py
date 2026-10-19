@@ -920,7 +920,7 @@ async def adm_users(call: CallbackQuery):
     with closing(db()) as con:
         total = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔎 Найти / заблокировать по ID", callback_data="adm:user_search")],[InlineKeyboardButton(text="🚫 Чёрный список", callback_data="adm:blocked_list")],[InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="adm:home")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔎 Поиск по @username или ID", callback_data="adm:user_search")],[InlineKeyboardButton(text="📋 Последние пользователи", callback_data="adm:user_recent")],[InlineKeyboardButton(text="🚫 Чёрный список", callback_data="adm:blocked_list")],[InlineKeyboardButton(text="⬅️ Админ-панель", callback_data="adm:home")]])
     await call.message.edit_text(f"👥 ПОЛЬЗОВАТЕЛИ\\n\\nВсего уникальных: {total}\\nНовых сегодня (UTC): {today}\\n\\nПолная блокировка по Telegram ID.", reply_markup=kb)
     await call.answer()
 
@@ -931,7 +931,7 @@ async def adm_user_search(call: CallbackQuery):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
     admin_state[call.from_user.id] = {"action": "user_search_id"}
-    await call.message.edit_text("🔎 Отправь числовой Telegram ID пользователя.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]]))
+    await call.message.edit_text("🔎 Введи Telegram ID или username, например @Alexandra_iGamePanda. Можно попробовать и имя, если оно есть в базе бота.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]]))
     await call.answer()
 
 
@@ -1007,26 +1007,70 @@ async def adm_block_preview(call: CallbackQuery):
 @dp.message(lambda message: admin_state.get(message.from_user.id, {}).get("action") == "user_search_id")
 async def adm_user_search_result(message: Message):
     value = (message.text or "").strip()
-    if not value.isdigit():
-        await message.answer("Отправь числовой Telegram ID.")
-        return
-    uid = int(value)
-    if is_admin(uid):
-        admin_state.pop(message.from_user.id, None)
-        await message.answer("Это ID администратора — блокировка запрещена.", reply_markup=admin_keyboard())
+    if not value:
+        await message.answer("Введи @username или Telegram ID.")
         return
     with closing(db()) as con:
-        row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE user_id=?", (uid,)).fetchone()
-        blocked = con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (uid,)).fetchone()
+        if value.isdigit():
+            row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE user_id=?", (int(value),)).fetchone()
+        else:
+            username = value.lstrip("@").strip()
+            row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE LOWER(username)=LOWER(?)", (username,)).fetchone()
+            if row is None:
+                row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE LOWER(first_name)=LOWER(?) ORDER BY created_at DESC LIMIT 1", (username,)).fetchone()
+        blocked = con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (row[0],)).fetchone() if row else None
     admin_state.pop(message.from_user.id, None)
     if not row:
-        await message.answer("ID не найден в базе. Пользователь должен хотя бы раз нажать /start.", reply_markup=admin_keyboard())
+        await message.answer("Не нашёл такого пользователя в базе BONUS UP. Поиск работает по ID или @username, если человек хотя бы раз запускал бота. Попробуй список последних пользователей.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📋 Последние пользователи", callback_data="adm:user_recent")],[InlineKeyboardButton(text="🔎 Новый поиск", callback_data="adm:user_search")],[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]]))
         return
-    _, username, first_name, created_at, source = row
+    uid, username, first_name, created_at, source = row
+    if is_admin(uid):
+        await message.answer("Это администратор — блокировка запрещена.", reply_markup=admin_keyboard())
+        return
     action = f"adm:unblock:{uid}" if blocked else f"adm:block:{uid}"
     label = "🔓 Разблокировать" if blocked else "⛔ Заблокировать"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=action)],[InlineKeyboardButton(text="🔎 Новый поиск", callback_data="adm:user_search")],[InlineKeyboardButton(text="🚫 Чёрный список", callback_data="adm:blocked_list")],[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]])
     await message.answer(f"👤 ПОЛЬЗОВАТЕЛЬ\\n\\nID: {uid}\\nИмя: {first_name or '—'}\\nUsername: @{username or '—'}\\nЗарегистрирован: {created_at}\\nИсточник: {source or '—'}\\nСтатус: {'⛔ ЗАБЛОКИРОВАН' if blocked else '🟢 Активен'}", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "adm:user_recent")
+async def adm_user_recent(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    with closing(db()) as con:
+        rows = con.execute("SELECT user_id,username,first_name FROM users ORDER BY created_at DESC LIMIT 40").fetchall()
+    kb = InlineKeyboardBuilder()
+    for uid, username, first_name in rows:
+        if is_admin(uid):
+            continue
+        label = f"{first_name or 'Без имени'} @{username}" if username else (first_name or f"ID {uid}")
+        kb.button(text=label[:64], callback_data=f"adm:useropen:{uid}")
+    kb.button(text="🔎 Поиск по @username или ID", callback_data="adm:user_search")
+    kb.button(text="⬅️ К пользователям", callback_data="adm:users")
+    kb.adjust(1)
+    await call.message.edit_text("📋 ПОСЛЕДНИЕ ПОЛЬЗОВАТЕЛИ\\n\\nВыбери человека, чтобы открыть карточку и при необходимости заблокировать.", reply_markup=kb.as_markup())
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:useropen:"))
+async def adm_user_open(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    uid = int(call.data.rsplit(":", 1)[1])
+    with closing(db()) as con:
+        row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE user_id=?", (uid,)).fetchone()
+        blocked = con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (uid,)).fetchone()
+    if not row:
+        await call.answer("Пользователь не найден.", show_alert=True)
+        return
+    uid, username, first_name, created_at, source = row
+    action = f"adm:unblock:{uid}" if blocked else f"adm:block:{uid}"
+    label = "🔓 Разблокировать" if blocked else "⛔ Заблокировать"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=action)],[InlineKeyboardButton(text="🔎 Новый поиск", callback_data="adm:user_search")],[InlineKeyboardButton(text="📋 Последние пользователи", callback_data="adm:user_recent")],[InlineKeyboardButton(text="⬅️ К пользователям", callback_data="adm:users")]])
+    await call.message.edit_text(f"👤 ПОЛЬЗОВАТЕЛЬ\\n\\nID: {uid}\\nИмя: {first_name or '—'}\\nUsername: @{username or '—'}\\nЗарегистрирован: {created_at}\\nИсточник: {source or '—'}\\nСтатус: {'⛔ ЗАБЛОКИРОВАН' if blocked else '🟢 Активен'}", reply_markup=kb)
+    await call.answer()
 
 
 @dp.callback_query(F.data == "adm:text_broadcast")
