@@ -2449,6 +2449,17 @@ box.innerHTML=items.filter(x=>hasPartnerLink(x)).map(x=>'<article class="card" d
 box.querySelectorAll(".card").forEach(card=>{card.addEventListener("click",e=>{if(e.target.closest(".copy"))return;openModal(Number(card.dataset.open))});card.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target===card){e.preventDefault();openModal(Number(card.dataset.open))}})});
 box.querySelectorAll("[data-copy]").forEach(btn=>btn.addEventListener("click",e=>{e.stopPropagation();const item=all.find(x=>x.id===Number(btn.dataset.copy));if(item)copyPromo(item.promo)}))
 }
+function openBannerLinks(id){
+ const x=all.find(item=>item.id===id);if(!x)return;
+ if(!x.mini_app_url&&!x.site_url){openModal(id);return}
+ selectedId=id;
+ const modal=document.getElementById("modalContent");
+ modal.innerHTML='<div class="modalhead"><div class="modal-logo">'+logoHtml(x,"modal-logo")+'</div><div style="min-width:0;flex:1"><div class="badges">'+bonusBadges(x.bonus)+'</div><div class="modal-title" style="margin-top:8px">'+esc(x.name)+'</div></div><button class="modal-close" id="closeModal" aria-label="'+esc(t("close"))+'">×</button></div>'+
+ (x.mini_app_url?'<a class="play tonplay-telegram" href="'+esc(x.mini_app_url)+'" target="_blank" rel="noopener">✈️ Играть в Telegram</a>':'')+
+ (x.site_url?'<a class="play tonplay-site" href="'+esc(x.site_url)+'" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'');
+ document.getElementById("modalBackdrop").classList.add("open");document.body.style.overflow="hidden";
+ document.getElementById("closeModal").onclick=closeModal;
+}
 function openModal(id){const x=all.find(item=>item.id===id);if(!x)return;selectedId=id;const other=all.filter(item=>item.category===x.category&&item.id!==id&&hasPartnerLink(item));const modal=document.getElementById("modalContent");
 modal.innerHTML='<div class="modalhead"><div class="modal-logo">'+logoHtml(x,"modal-logo")+'</div><div style="min-width:0;flex:1"><div class="badges">'+bonusBadges(x.bonus)+'</div><div class="modal-title" style="margin-top:8px">'+esc(x.name)+'</div></div><button class="modal-close" id="closeModal" aria-label="'+esc(t("close"))+'">×</button></div>'+
 '<div class="modal-section"><div class="muted-label">'+esc(t("about"))+'</div><div class="description">'+esc(x.description||t("description"))+'</div></div>'+
@@ -2479,7 +2490,7 @@ function renderBanners(items){
   if(bannerLink && String(b.title||"").toLowerCase().includes("tonplay")){
    bannerLink.addEventListener("click",e=>{
     const offer=all.find(item=>String(item.name||"").toLowerCase().includes("tonplay"));
-    if(offer){e.preventDefault();openModal(offer.id)}
+    if(offer){e.preventDefault();openBannerLinks(offer.id)}
    });
   }
   dots.innerHTML=items.map((item,i)=>'<button class="banner-dot '+(i===idx?'banner-dot-active':'')+'" aria-label="Баннер '+(i+1)+'" data-index="'+i+'"><span class="banner-dot-fill"></span></button>').join("");
