@@ -2388,7 +2388,7 @@ function openModal(id){const x=all.find(item=>item.id===id);if(!x)return;selecte
 modal.innerHTML='<div class="modalhead"><div class="modal-logo">'+logoHtml(x,"modal-logo")+'</div><div style="min-width:0;flex:1"><div class="badges">'+bonusBadges(x.bonus)+'</div><div class="modal-title" style="margin-top:8px">'+esc(x.name)+'</div></div><button class="modal-close" id="closeModal" aria-label="'+esc(t("close"))+'">×</button></div>'+
 '<div class="modal-section"><div class="muted-label">'+esc(t("about"))+'</div><div class="description">'+esc(x.description||t("description"))+'</div></div>'+
 (x.promo?'<div class="modal-section"><div class="muted-label">'+esc(t("promoCode"))+'</div><div class="promo-large"><div class="promo-value">'+esc(x.promo)+'</div><button class="copy" id="modalCopy">'+esc(t("copy"))+'</button></div></div>':'')+
-(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>')+
+(x.name&&x.name.toLowerCase().includes("tonplay")?'<a class="play tonplay-telegram" href="https://telegram.me/tonplay/dapp?startapp=hUWcizup0yfbiu" target="_blank" rel="noopener">🎮 Играть в Telegram</a><a class="play tonplay-site" href="https://tonplay.fo/hUWcizup0yfbiu?click_id={click_id}" target="_blank" rel="noopener">🌐 Играть на сайте</a>':(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>'))+
 (other.length?'<div class="other-title">'+esc(t(x.category==="bets"?"otherBets":"otherGames"))+'</div><div class="other-grid">'+other.map(o=>hasPartnerLink(o)?'<a class="mini-game" href="/go/'+Number(o.id)+'" target="_blank" rel="noopener"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("open"))+'</span></span></a>':'<div class="mini-game" style="opacity:.55"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("soon"))+'</span></span></div>').join("")+'</div>':'');
 document.getElementById("modalBackdrop").classList.add("open");document.body.style.overflow="hidden";
 document.getElementById("closeModal").onclick=closeModal;
@@ -2453,6 +2453,7 @@ async def api_offers(request):
             FROM offers WHERE enabled=1 AND COALESCE(hidden,0)=0
             ORDER BY category,
                 CASE
+                    WHEN lower(category)='casino' AND lower(name) LIKE '%tonplay%' THEN -1
                     WHEN lower(name) LIKE '%1win%' THEN 0
                     WHEN lower(name) LIKE '%зенит%' OR lower(name) LIKE '%zenit%' THEN 1
                     ELSE 2
@@ -2477,7 +2478,7 @@ async def api_banners(request):
             SELECT id,title,text,image_url,button_text,url
             FROM banners
             WHERE enabled=1 AND (section=? OR section='both')
-            ORDER BY CASE WHEN position<=0 THEN 2147483647 ELSE position END, id
+            ORDER BY CASE WHEN lower(title) LIKE '%tonplay%' THEN -1 ELSE CASE WHEN position<=0 THEN 2147483647 ELSE position END END, id
         """, (section,)).fetchall()
     return web.json_response([{"id":r[0],"title":r[1],"text":r[2],"image_url":r[3],"button_text":r[4],"url":r[5]} for r in rows], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
