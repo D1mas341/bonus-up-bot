@@ -2410,6 +2410,13 @@ function renderBanners(items){
  function show(){
   const b=items[idx];
   box.innerHTML='<a class="banner-image-link" href="/go/banner/'+Number(b.id)+'" aria-label="Открыть предложение"><img class="banner-backdrop" src="'+esc(b.image_url||"")+'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"")+'" alt="" loading="lazy"></a>';
+  const bannerLink=box.querySelector(".banner-image-link");
+  if(bannerLink && String(b.title||"").toLowerCase().includes("tonplay")){
+   bannerLink.addEventListener("click",e=>{
+    const offer=all.find(item=>String(item.name||"").toLowerCase().includes("tonplay"));
+    if(offer){e.preventDefault();openModal(offer.id)}
+   });
+  }
   dots.innerHTML=items.map((item,i)=>'<button class="banner-dot '+(i===idx?'banner-dot-active':'')+'" aria-label="Баннер '+(i+1)+'" data-index="'+i+'"><span class="banner-dot-fill"></span></button>').join("");
   dots.querySelectorAll("button").forEach(btn=>btn.onclick=()=>{idx=Number(btn.dataset.index);show();restart()});
  }
