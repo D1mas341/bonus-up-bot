@@ -137,7 +137,7 @@ def init_db():
         """)
         # Additive migrations preserve existing partner links and offers.
         cols = [r[1] for r in con.execute("PRAGMA table_info(offers)").fetchall()]
-        for col, definition in [("geo", "TEXT DEFAULT ''"), ("promo_code", "TEXT DEFAULT ''"), ("logo_url", "TEXT DEFAULT ''"), ("hidden", "INTEGER DEFAULT 0")]:
+        for col, definition in [("geo", "TEXT DEFAULT ''"), ("promo_code", "TEXT DEFAULT ''"), ("logo_url", "TEXT DEFAULT ''"), ("hidden", "INTEGER DEFAULT 0"), ("mini_app_url", "TEXT DEFAULT ''"), ("site_url", "TEXT DEFAULT ''")]:
             if col not in cols:
                 con.execute(f"ALTER TABLE offers ADD COLUMN {col} {definition}")
         con.execute("""
@@ -289,6 +289,7 @@ def admin_keyboard():
     kb.button(text="🙈 Скрыть / восстановить", callback_data="adm:visibility")
     kb.button(text="🗑 Удалить оффер", callback_data="adm:delete")
     kb.button(text="🏷 Промокод / логотип", callback_data="adm:promo")
+    kb.button(text="🎮 Mini App + сайт (2 ссылки)", callback_data="adm:dual_links")
     kb.button(text="🖼 Баннеры Mini App", callback_data="adm:banners")
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
@@ -1537,6 +1538,57 @@ async def adm_clearlogo(call: CallbackQuery):
     await adm_promoon(call)
 
 
+@dp.callback_query(F.data == "adm:dual_links")
+async def adm_dual_links(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    await call.message.edit_text(
+        "🎮 MINI APP + САЙТ\n\nВыбери оффер, которому нужно задать две отдельные ссылки. "
+        "Сначала добавь оффер через «Добавить оффер», затем настрой здесь URL Mini App и URL сайта.",
+        reply_markup=admin_offer_keyboard("adm:dualoffer", visible_only=True)
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:dualoffer:"))
+async def adm_dualoffer(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    oid = int(call.data.split(":")[2])
+    with closing(db()) as con:
+        row = con.execute("SELECT name,mini_app_url,site_url FROM offers WHERE id=?", (oid,)).fetchone()
+    if not row:
+        await call.answer("Оффер не найден", show_alert=True)
+        return
+    name, mini_url, site_url = row
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ URL Mini App", callback_data=f"adm:dualfield:{oid}:mini")
+    kb.button(text="✏️ URL сайта", callback_data=f"adm:dualfield:{oid}:site")
+    kb.button(text="⬅️ К списку офферов", callback_data="adm:dual_links")
+    kb.adjust(1)
+    await call.message.edit_text(
+        f"🎮 {name}\n\nURL Mini App: {mini_url or 'не задан'}\nURL сайта: {site_url or 'не задан'}\n\n"
+        "Обе ссылки должны принадлежать одному промо TonPlay. Для удаления ссылки отправь -.",
+        reply_markup=kb.as_markup()
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:dualfield:"))
+async def adm_dualfield(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    _, _, oid, field = call.data.split(":")
+    field_name = "mini_app_url" if field == "mini" else "site_url"
+    label = "URL Mini App (telegram.me/tonplay/dapp?...)" if field == "mini" else "URL сайта / URL трафика TonPlay"
+    admin_state[call.from_user.id] = {"action":"dual_link","step":field_name,"offer_id":int(oid),"data":{}}
+    await call.message.edit_text(f"Отправь {label}. Нужна ссылка http:// или https://. Чтобы очистить поле, отправь -. Для отмены напиши «отмена».")
+    await call.answer()
+
+
 @dp.callback_query(F.data == "adm:banners")
 async def adm_banners(call: CallbackQuery):
     if not is_admin(call.from_user.id):
@@ -1863,6 +1915,19 @@ async def admin_text(message: Message):
     if text.lower() in {"отмена", "/cancel"}:
         admin_state.pop(uid, None)
         await message.answer("❌ Отменено.", reply_markup=admin_keyboard())
+        return
+
+    if action == "dual_link" and step in {"mini_app_url", "site_url"}:
+        value = "" if text == "-" else text
+        if value and not (value.startswith("https://") or value.startswith("http://")):
+            await message.answer("Нужна ссылка, начинающаяся с http:// или https://, либо - для очистки.")
+            return
+        column = step
+        with closing(db()) as con:
+            con.execute(f"UPDATE offers SET {column}=? WHERE id=?", (value, state["offer_id"]))
+            con.commit()
+        admin_state.pop(uid, None)
+        await message.answer("✅ Ссылка сохранена.", reply_markup=admin_keyboard())
         return
 
     if action == "text_broadcast" and step == "body":
@@ -2388,7 +2453,7 @@ function openModal(id){const x=all.find(item=>item.id===id);if(!x)return;selecte
 modal.innerHTML='<div class="modalhead"><div class="modal-logo">'+logoHtml(x,"modal-logo")+'</div><div style="min-width:0;flex:1"><div class="badges">'+bonusBadges(x.bonus)+'</div><div class="modal-title" style="margin-top:8px">'+esc(x.name)+'</div></div><button class="modal-close" id="closeModal" aria-label="'+esc(t("close"))+'">×</button></div>'+
 '<div class="modal-section"><div class="muted-label">'+esc(t("about"))+'</div><div class="description">'+esc(x.description||t("description"))+'</div></div>'+
 (x.promo?'<div class="modal-section"><div class="muted-label">'+esc(t("promoCode"))+'</div><div class="promo-large"><div class="promo-value">'+esc(x.promo)+'</div><button class="copy" id="modalCopy">'+esc(t("copy"))+'</button></div></div>':'')+
-(x.name&&x.name.toLowerCase().includes("tonplay")?'<a class="play tonplay-telegram" href="https://telegram.me/tonplay/dapp?startapp=hUWcizup0yfbiu" target="_blank" rel="noopener">🎮 Играть в Telegram</a><a class="play tonplay-site" href="https://tonplay.fo/hUWcizup0yfbiu?click_id={click_id}" target="_blank" rel="noopener">🌐 Играть на сайте</a>':(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>'))+
+((x.mini_app_url||x.site_url)?((x.mini_app_url?'<a class="play tonplay-telegram" href="'+esc(x.mini_app_url)+'" target="_blank" rel="noopener">🎮 Играть в Telegram</a>':'')+(x.site_url?'<a class="play tonplay-site" href="'+esc(x.site_url)+'" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'')):(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>')))+
 (other.length?'<div class="other-title">'+esc(t(x.category==="bets"?"otherBets":"otherGames"))+'</div><div class="other-grid">'+other.map(o=>hasPartnerLink(o)?'<a class="mini-game" href="/go/'+Number(o.id)+'" target="_blank" rel="noopener"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("open"))+'</span></span></a>':'<div class="mini-game" style="opacity:.55"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("soon"))+'</span></span></div>').join("")+'</div>':'');
 document.getElementById("modalBackdrop").classList.add("open");document.body.style.overflow="hidden";
 document.getElementById("closeModal").onclick=closeModal;
@@ -2456,7 +2521,7 @@ async def api_offers(request):
         return denied
     with closing(db()) as con:
         rows = con.execute("""
-            SELECT id,category,name,description,bonus,url,promo_code,logo_url
+            SELECT id,category,name,description,bonus,url,promo_code,logo_url,mini_app_url,site_url
             FROM offers WHERE enabled=1 AND COALESCE(hidden,0)=0
             ORDER BY category,
                 CASE
@@ -2469,7 +2534,8 @@ async def api_offers(request):
         """).fetchall()
     return web.json_response([
         {"id":r[0],"category":r[1],"name":r[2],"description":r[3],"bonus":r[4],
-         "url":r[5],"promo":r[6] or "", "logo_url":r[7] or ""}
+         "url":r[5],"promo":r[6] or "", "logo_url":r[7] or "",
+         "mini_app_url":r[8] or "", "site_url":r[9] or ""}
         for r in rows
     ], headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
