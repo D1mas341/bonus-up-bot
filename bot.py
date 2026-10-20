@@ -66,7 +66,7 @@ def validate_webapp_init_data(init_data: str):
         received_hash = pairs.pop("hash", "")
         if not received_hash:
             return None
-        check_string = "\\n".join(f"{key}={value}" for key, value in sorted(pairs.items()))
+        check_string = "\n".join(f"{key}={value}" for key, value in sorted(pairs.items()))
         secret_key = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
         expected = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, received_hash):
