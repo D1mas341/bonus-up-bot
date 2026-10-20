@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from io import BytesIO
 from urllib.parse import urlparse, parse_qsl
 from contextlib import closing
@@ -2455,8 +2456,8 @@ function openBannerLinks(id){
  selectedId=id;
  const modal=document.getElementById("modalContent");
  modal.innerHTML='<div class="modalhead"><div class="modal-logo">'+logoHtml(x,"modal-logo")+'</div><div style="min-width:0;flex:1"><div class="badges">'+bonusBadges(x.bonus)+'</div><div class="modal-title" style="margin-top:8px">'+esc(x.name)+'</div></div><button class="modal-close" id="closeModal" aria-label="'+esc(t("close"))+'">×</button></div>'+
- (x.mini_app_url?'<a class="play tonplay-telegram" href="'+esc(x.mini_app_url)+'" target="_blank" rel="noopener">✈️ Играть в Telegram</a>':'')+
- (x.site_url?'<a class="play tonplay-site" href="'+esc(x.site_url)+'" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'');
+ (x.mini_app_url?'<a class="play tonplay-telegram" href="/go/dual/'+Number(x.id)+'/mini" target="_blank" rel="noopener">✈️ Играть в Telegram</a>':'')+
+ (x.site_url?'<a class="play tonplay-site" href="/go/dual/'+Number(x.id)+'/site" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'');
  document.getElementById("modalBackdrop").classList.add("open");document.body.style.overflow="hidden";
  document.getElementById("closeModal").onclick=closeModal;
 }
@@ -2464,7 +2465,7 @@ function openModal(id){const x=all.find(item=>item.id===id);if(!x)return;selecte
 modal.innerHTML='<div class="modalhead"><div class="modal-logo">'+logoHtml(x,"modal-logo")+'</div><div style="min-width:0;flex:1"><div class="badges">'+bonusBadges(x.bonus)+'</div><div class="modal-title" style="margin-top:8px">'+esc(x.name)+'</div></div><button class="modal-close" id="closeModal" aria-label="'+esc(t("close"))+'">×</button></div>'+
 '<div class="modal-section"><div class="muted-label">'+esc(t("about"))+'</div><div class="description">'+esc(x.description||t("description"))+'</div></div>'+
 (x.promo?'<div class="modal-section"><div class="muted-label">'+esc(t("promoCode"))+'</div><div class="promo-large"><div class="promo-value">'+esc(x.promo)+'</div><button class="copy" id="modalCopy">'+esc(t("copy"))+'</button></div></div>':'')+
-((x.mini_app_url||x.site_url)?((x.mini_app_url?'<a class="play tonplay-telegram" href="'+esc(x.mini_app_url)+'" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+(x.site_url?'<a class="play tonplay-site" href="'+esc(x.site_url)+'" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'')):(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>'))+
+((x.mini_app_url||x.site_url)?((x.mini_app_url?'<a class="play tonplay-telegram" href="'+esc(x.mini_app_url)+'" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+(x.site_url?'<a class="play tonplay-site" href="/go/dual/'+Number(x.id)+'/site" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'')):(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>'))+
 (other.length?'<div class="other-title">'+esc(t(x.category==="bets"?"otherBets":"otherGames"))+'</div><div class="other-grid">'+other.map(o=>hasPartnerLink(o)?'<a class="mini-game" href="/go/'+Number(o.id)+'" target="_blank" rel="noopener"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("open"))+'</span></span></a>':'<div class="mini-game" style="opacity:.55"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("soon"))+'</span></span></div>').join("")+'</div>':'');
 document.getElementById("modalBackdrop").classList.add("open");document.body.style.overflow="hidden";
 document.getElementById("closeModal").onclick=closeModal;
@@ -2490,8 +2491,8 @@ function renderBanners(items){
    const bannerImage='<img class="banner-backdrop" src="'+esc(b.image_url||"")+'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"")+'" alt="" loading="lazy">';
    if(isTonPlay && tonOffer && (tonOffer.mini_app_url||tonOffer.site_url)){
     box.innerHTML='<div class="banner-image-link tonplay-banner-trigger" role="button" tabindex="0" aria-label="Показать кнопки TonPlay">'+bannerImage+'</div><div class="banner-action-links">'+
-      (tonOffer.mini_app_url?'<a class="play tonplay-telegram" href="'+esc(tonOffer.mini_app_url)+'" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+
-      (tonOffer.site_url?'<a class="play tonplay-site" href="'+esc(tonOffer.site_url)+'" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'')+'</div>';
+      (tonOffer.mini_app_url?'<a class="play tonplay-telegram" href="/go/dual/'+Number(tonOffer.id)+'/mini" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+
+      (tonOffer.site_url?'<a class="play tonplay-site" href="/go/dual/'+Number(tonOffer.id)+'/site" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'')+'</div>';
     const trigger=box.querySelector(".tonplay-banner-trigger"),actions=box.querySelector(".banner-action-links");
     const toggleActions=()=>actions.classList.toggle("open");
     trigger.addEventListener("click",toggleActions);
@@ -2598,6 +2599,32 @@ async def go_offer(request):
     if not row or not is_partner_url(row[0]):
         raise web.HTTPNotFound(text="Партнёрская ссылка ещё не подключена.")
     raise web.HTTPFound(row[0])
+
+async def go_dual_offer(request):
+    try:
+        offer_id = int(request.match_info["offer_id"])
+        kind = request.match_info["kind"]
+    except (TypeError, ValueError):
+        raise web.HTTPNotFound()
+    if kind not in {"mini", "site"}:
+        raise web.HTTPNotFound()
+    with closing(db()) as con:
+        row = con.execute(
+            "SELECT mini_app_url,site_url,enabled FROM offers WHERE id=?",
+            (offer_id,)
+        ).fetchone()
+        if not row or not row[2]:
+            raise web.HTTPNotFound(text="Оффер недоступен.")
+        target = row[0] if kind == "mini" else row[1]
+        if not is_partner_url(target):
+            raise web.HTTPNotFound(text="Ссылка для этого направления не настроена.")
+        click_id = uuid.uuid4().hex
+        con.execute("INSERT INTO clicks(user_id,offer_id) VALUES(NULL,?)", (offer_id,))
+        con.commit()
+    if kind == "site" and "{click_id}" in target:
+        target = target.replace("{click_id}", click_id)
+    raise web.HTTPFound(target)
+
 
 async def go_banner(request):
     try:
@@ -2747,6 +2774,7 @@ async def main():
     app.router.add_get("/api/offers", api_offers)
     app.router.add_get("/api/banners", api_banners)
     app.router.add_get("/go/{offer_id}", go_offer)
+    app.router.add_get("/go/dual/{offer_id}/{kind}", go_dual_offer)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
     app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
     app.router.add_get("/terms", terms_page)
