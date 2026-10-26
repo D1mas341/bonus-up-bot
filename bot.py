@@ -1534,9 +1534,11 @@ async def adm_clearlogo(call: CallbackQuery):
     with closing(db()) as con:
         con.execute("UPDATE offers SET logo_url='' WHERE id=?", (oid,))
         con.commit()
+    await call.message.edit_text(
+        "🗑 Логотип удалён. Выбери оффер для дальнейшей настройки:",
+        reply_markup=admin_offer_keyboard("adm:promoon", visible_only=True)
+    )
     await call.answer("Логотип удалён")
-    call.data = f"adm:promoon:{oid}"
-    await adm_promoon(call)
 
 
 @dp.callback_query(F.data == "adm:dual_links")
