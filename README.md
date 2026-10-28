@@ -43,6 +43,16 @@ python bot.py
 
 Важно: партнёрская сеть должна поддерживать передачу sub-ID/click ID и возвращать тот же ID в postback. Не добавляйте произвольные параметры в партнёрские ссылки без проверки документации конкретной сети. Реальная передача click ID и получение конверсий не считаются проверенными, пока это не протестировано с кабинетом соответствующего партнёра.
 
+### TonPlay GET postback (prepared endpoint)
+
+The optional GET endpoint is `/postback/tonplay`. It is disabled until Railway has a `TONPLAY_POSTBACK_SECRET` variable. It expects `key`, `click_id`, and a unique `event_id` or `transaction_id`; optional fields are `event` or `status`, `amount` or `payout`, and `currency`. Example template:
+
+```text
+https://bonus-up-bot-production.up.railway.app/postback/tonplay?key=REPLACE_WITH_SECRET&click_id={click_id}&transaction_id={transaction_id}&event=registration
+```
+
+**Do not paste this template into TonPlay until its manager/cabinet confirms the exact supported macros and whether it sends GET callbacks.** The secret is carried in the query string because GET-only callback settings often cannot set headers; query secrets may appear in provider request logs. Use a dedicated long random secret, not the bot token or `POSTBACK_SECRET`. If TonPlay supports custom headers or POST JSON, prefer the authenticated `POST /postback` endpoint instead.
+
 ### Формат postback
 
 Запрос отправляется методом POST на `/postback`, с заголовком `X-Postback-Secret: <ваш секрет>` и JSON-телом:
