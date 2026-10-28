@@ -2916,9 +2916,16 @@ async def partner_postback(request):
     if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
         raise web.HTTPBadRequest(text="Invalid amount.")
     with closing(db()) as con:
-        known_click = con.execute("SELECT 1 FROM clicks WHERE click_id=?", (click_id,)).fetchone()
+        known_click = con.execute(
+            "SELECT partner FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
         if not known_click:
             raise web.HTTPNotFound(text="Unknown click_id.")
+        # The clicks.partner field is currently a display label (often an
+        # offer, banner, or campaign title), not a stable affiliate-network ID.
+        # Do not compare it with the partner's postback identifier: that rejects
+        # legitimate conversions. The authenticated secret and unique click_id
+        # bind this event to a tracked click; preserve the network ID from payload.
         try:
             con.execute(
                 """INSERT INTO conversion_events
