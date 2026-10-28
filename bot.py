@@ -92,6 +92,18 @@ def webapp_access_denied(request):
     return None
 
 
+
+
+def parse_callback_id(data: str, position: int = -1, *, from_right: bool = False) -> int:
+    """Return a positive numeric callback ID, or 0 for malformed/stale callback data."""
+    try:
+        parts = data.rsplit(":", 1) if from_right else data.split(":")
+        value = int(parts[position])
+        return value if value > 0 else 0
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return 0
+
+
 def db():
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
@@ -654,7 +666,10 @@ async def home(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("offer:"))
 async def offer(call: CallbackQuery):
-    offer_id = int(call.data.split(":")[1])
+    offer_id = parse_callback_id(call.data, 1)
+    if not offer_id:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("""
         SELECT category,name,description,bonus,url,geo
@@ -757,7 +772,10 @@ async def adm_view(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("""
         SELECT id,category,name,description,bonus,url,enabled,position,geo
@@ -811,7 +829,10 @@ async def adm_editone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {
         "action": "edit", "step": "name", "offer_id": oid, "data": {}
     }
@@ -840,7 +861,10 @@ async def adm_linkone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {
         "action": "link", "step": "url", "offer_id": oid
     }
@@ -868,7 +892,10 @@ async def adm_toggleone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute(
             "UPDATE offers SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?",
@@ -915,7 +942,10 @@ async def adm_visibilityone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name,COALESCE(hidden,0) FROM offers WHERE id=?", (oid,)).fetchone()
         if row:
@@ -943,7 +973,10 @@ async def adm_deleteone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name FROM offers WHERE id=?", (oid,)).fetchone()
     if not row:
@@ -962,7 +995,10 @@ async def adm_deleteconfirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name FROM offers WHERE id=?", (oid,)).fetchone()
         if row:
@@ -1020,7 +1056,10 @@ async def adm_unblock(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute("DELETE FROM blocked_users WHERE user_id=?", (uid,))
         con.commit()
@@ -1033,7 +1072,10 @@ async def adm_block_confirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     if is_admin(uid):
         await call.answer("Нельзя блокировать администратора.", show_alert=True)
         return
@@ -1050,7 +1092,10 @@ async def adm_block_preview(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     if is_admin(uid):
         await call.answer("Нельзя блокировать администратора.", show_alert=True)
         return
@@ -1122,7 +1167,10 @@ async def adm_user_open(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE user_id=?", (uid,)).fetchone()
         blocked = con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (uid,)).fetchone()
@@ -1241,7 +1289,10 @@ async def adm_camp_toggle(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    cid = int(call.data.rsplit(":",1)[1])
+    cid = parse_callback_id(call.data, from_right=True)
+    if not cid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT enabled,COALESCE(placement,'broadcast') FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
@@ -1272,7 +1323,10 @@ async def adm_camp_delete(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    cid = int(call.data.rsplit(":",1)[1])
+    cid = parse_callback_id(call.data, from_right=True)
+    if not cid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         sent_rows = con.execute(
             "SELECT user_id,message_id FROM campaign_delivery_messages WHERE campaign_id=?",
@@ -1310,7 +1364,10 @@ async def adm_camp_send(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    cid = int(call.data.rsplit(":", 1)[1])
+    cid = parse_callback_id(call.data, from_right=True)
+    if not cid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         campaign = con.execute(
             "SELECT title,body,media_type,media_file_id,button_text,button_url FROM campaigns WHERE id=?",
@@ -1497,7 +1554,10 @@ async def adm_revenue_del_confirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    rid = int(call.data.rsplit(":", 1)[1])
+    rid = parse_callback_id(call.data, from_right=True)
+    if not rid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT partner,amount,currency FROM revenue_entries WHERE id=?", (rid,)).fetchone()
     if not row:
@@ -1519,7 +1579,10 @@ async def adm_revenue_del_yes(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    rid = int(call.data.rsplit(":", 1)[1])
+    rid = parse_callback_id(call.data, from_right=True)
+    if not rid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         cur = con.execute("DELETE FROM revenue_entries WHERE id=?", (rid,))
         con.commit()
@@ -1567,7 +1630,10 @@ async def adm_clickone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("""
         SELECT o.name, COUNT(c.id)
@@ -1595,7 +1661,10 @@ async def adm_promoon(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name,promo_code,logo_url FROM offers WHERE id=?", (oid,)).fetchone()
     if not row:
@@ -1621,7 +1690,10 @@ async def adm_promocode(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {"action":"promo_code_only","step":"promo_code","offer_id":oid,"data":{}}
     await call.message.edit_text("✏️ Отправь новый промокод. Чтобы удалить существующий, отправь -.")
     await call.answer()
@@ -1632,7 +1704,10 @@ async def adm_offerlogo(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {"action":"logo_only","step":"logo_url","offer_id":oid,"data":{}}
     await call.message.edit_text("🖼 Отправь логотип изображением (можно как фото или как файл JPG/PNG до 1,5 МБ) либо прямую HTTPS-ссылку. Промокод не изменится. Для отмены напиши «отмена».")
     await call.answer()
@@ -1643,7 +1718,10 @@ async def adm_clearlogo(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute("UPDATE offers SET logo_url='' WHERE id=?", (oid,))
         con.commit()
@@ -1672,7 +1750,10 @@ async def adm_dualoffer(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name,mini_app_url,site_url FROM offers WHERE id=?", (oid,)).fetchone()
     if not row:
@@ -1736,7 +1817,10 @@ async def adm_bannertoggle(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute("UPDATE banners SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (bid,))
         con.commit()
@@ -1749,7 +1833,10 @@ async def adm_banneredit(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
     if not row:
@@ -1808,7 +1895,10 @@ async def adm_bannerdelete(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
     if not row:
@@ -1831,7 +1921,10 @@ async def adm_bannerdeleteconfirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
         con.execute("DELETE FROM banners WHERE id=?", (bid,))
