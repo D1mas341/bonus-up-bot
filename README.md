@@ -47,7 +47,7 @@ python bot.py
 
 ### TonPlay GET postback
 
-Endpoint `GET /postback/tonplay` принимает `key`, `click_id`, `transaction_id`, `event`, `amount` и `currency`. Он отключён, пока в Railway не задана отдельная переменная `TONPLAY_POSTBACK_SECRET`.
+Endpoint `GET /postback/tonplay` принимает `key`, `click_id`, `transaction_id`, `event`, `amount` (или `amount_usd`) и `currency`. Он отключён, пока в Railway не задана отдельная переменная `TONPLAY_POSTBACK_SECRET`. Для события регистрации без ID транзакции используется уникальный ключ из click ID и типа события; для депозитов необходим ID транзакции, чтобы не объединять повторные депозиты.
 
 Согласно документации TonPlay, события передаются через `{action}` (значения `register`, `first_deposit`, `deposit` и другие), уникальный ID транзакции — через `{tx_id}`, сумма в USD — через `{amount_usd}`. Если партнёрская ссылка BONUS UP передаёт собственный ID как параметр `click_id={click_id}`, callback должен вернуть это значение через макрос `{click_id}`.
 
