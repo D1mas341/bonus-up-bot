@@ -764,7 +764,8 @@ async def adm_view(call: CallbackQuery):
         FROM offers WHERE id=?
         """, (oid,)).fetchone()
         clicks = con.execute(
-            "SELECT COUNT(*) FROM clicks WHERE offer_id=?", (oid,)
+            "SELECT COUNT(*) FROM clicks WHERE offer_id=? AND COALESCE(click_type,'offer')!='offer_card'",
+            (oid,)
         ).fetchone()[0]
     if not row:
         await call.answer("Оффер не найден", show_alert=True)
@@ -1550,6 +1551,7 @@ async def adm_clicks(call: CallbackQuery):
         SELECT o.name, COUNT(c.id)
         FROM offers o
         LEFT JOIN clicks c ON c.offer_id=o.id
+            AND COALESCE(c.click_type,'offer')!='offer_card'
         GROUP BY o.id
         ORDER BY COUNT(c.id) DESC, o.position, o.id
         """).fetchall()
@@ -1570,6 +1572,7 @@ async def adm_clickone(call: CallbackQuery):
         row = con.execute("""
         SELECT o.name, COUNT(c.id)
         FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
+            AND COALESCE(c.click_type,'offer')!='offer_card'
         WHERE o.id=? GROUP BY o.id
         """, (oid,)).fetchone()
     if row:
