@@ -1383,10 +1383,11 @@ async def adm_analytics(call: CallbackQuery):
             ORDER BY COUNT(*) DESC LIMIT 8
         """).fetchall()
         offer_rows = con.execute("""
-            SELECT o.name, COUNT(c.id) AS clicks,
-                   COUNT(DISTINCT c.user_id) AS known_unique_users
+            SELECT o.name,
+                   SUM(CASE WHEN c.id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN 1 ELSE 0 END) AS link_clicks,
+                   COUNT(DISTINCT CASE WHEN COALESCE(c.click_type,'offer')!='offer_card' THEN c.user_id END) AS known_unique_users
             FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
-            GROUP BY o.id ORDER BY clicks DESC, o.position, o.id
+            GROUP BY o.id ORDER BY link_clicks DESC, o.position, o.id
         """).fetchall()
         campaign_rows = con.execute("SELECT title,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
         revenue_rows = con.execute("SELECT currency,COALESCE(SUM(amount),0) FROM revenue_entries GROUP BY currency ORDER BY currency").fetchall()
