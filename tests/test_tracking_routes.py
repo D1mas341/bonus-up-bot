@@ -233,6 +233,33 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
             ).fetchone()
         self.assertEqual(tuple(row), ("TonPlay", "registration", "tonplay-event-001", click_id))
 
+    async def test_tonplay_registration_without_transaction_id_is_recorded_once(self):
+        with bot.db() as con:
+            click_id = bot.log_click(
+                con, offer_id=1, source="ci", partner="TonPlay",
+                target_url="https://affiliate.test/landing"
+            )
+            con.commit()
+        params = {
+            "key": os.environ["TONPLAY_POSTBACK_SECRET"],
+            "click_id": click_id,
+            "event": "register",
+            "amount_usd": "0",
+            "currency": "USD",
+        }
+        first = await self.client.get("/postback/tonplay", params=params)
+        self.assertEqual(first.status, 200)
+        self.assertEqual(await first.json(), {"ok": True, "recorded": True})
+        duplicate = await self.client.get("/postback/tonplay", params=params)
+        self.assertEqual(duplicate.status, 200)
+        self.assertEqual(await duplicate.json(), {"ok": True, "duplicate": True})
+        with bot.db() as con:
+            row = con.execute(
+                "SELECT event_type,event_id,currency FROM conversion_events WHERE click_id=? AND partner='TonPlay'",
+                (click_id,),
+            ).fetchone()
+        self.assertEqual(tuple(row), ("register", f"{click_id}:register", "USD"))
+
     async def test_tonplay_get_postback_rejects_wrong_secret(self):
         response = await self.client.get(
             "/postback/tonplay",
