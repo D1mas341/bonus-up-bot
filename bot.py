@@ -1375,11 +1375,20 @@ async def adm_analytics(call: CallbackQuery):
     with closing(db()) as con:
         total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today_users = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-        offer_clicks = con.execute("SELECT COUNT(*) FROM clicks").fetchone()[0]
-        unique_users_clicked = con.execute("SELECT COUNT(DISTINCT user_id) FROM clicks WHERE user_id IS NOT NULL").fetchone()[0]
+        offer_clicks = con.execute("""
+            SELECT COUNT(*) FROM clicks WHERE COALESCE(click_type,'offer')!='offer_card'
+        """).fetchone()[0]
+        card_opens = con.execute("""
+            SELECT COUNT(*) FROM clicks WHERE click_type='offer_card'
+        """).fetchone()[0]
+        unique_users_clicked = con.execute("""
+            SELECT COUNT(DISTINCT user_id) FROM clicks
+            WHERE user_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
+        """).fetchone()[0]
         source_rows = con.execute("""
             SELECT COALESCE(NULLIF(source,''),'direct'),COUNT(*)
-            FROM clicks GROUP BY COALESCE(NULLIF(source,''),'direct')
+            FROM clicks WHERE COALESCE(click_type,'offer')!='offer_card'
+            GROUP BY COALESCE(NULLIF(source,''),'direct')
             ORDER BY COUNT(*) DESC LIMIT 8
         """).fetchall()
         offer_rows = con.execute("""
@@ -1401,8 +1410,9 @@ async def adm_analytics(call: CallbackQuery):
         "📈 АНАЛИТИКА И ДОХОД", "",
         f"👥 Всего пользователей: {total_users}",
         f"🆕 Новых сегодня (UTC): {today_users}",
-        f"🔗 Всего кликов: {offer_clicks}",
-        f"👤 Пользователей с отслеживаемыми кликами: {unique_users_clicked}", "",
+        f"🔗 Переходов по партнёрским ссылкам: {offer_clicks}",
+        f"👤 Пользователей с отслеживаемыми переходами: {unique_users_clicked}",
+        f"👁 Открытий карточек офферов в боте: {card_opens}", "",
         "🎁 ПЕРЕХОДЫ ПО ОФФЕРАМ:"
     ]
     lines.extend([
