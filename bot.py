@@ -1429,11 +1429,12 @@ async def adm_analytics(call: CallbackQuery):
         f"• {row[0]}: {row[1]} кликов; известных пользователей: {row[2]}"
         for row in offer_rows
     ] or ["Пока нет данных по офферам."])
-    lines += ["", "🤝 ПЕРЕХОДЫ ПО ПАРТНЁРАМ:"]
+    lines += ["", "🏷 ГРУППИРОВКА ПО ПОДПИСИ ССЫЛКИ:"]
     lines.extend([
-        f"• {partner}: {count} переходов"
-        for partner,count,_unique in partner_click_rows
-    ] or ["Пока нет переходов по партнёрам."])
+        f"• {label}: {count} переходов"
+        for label,count,_unique in partner_click_rows
+    ] or ["Пока нет данных по ссылкам."])
+    lines.append("Примечание: подпись здесь может быть названием оффера, баннера или кампании; это не подтверждённая статистика по партнёрским сетям.")
     lines += ["", "🧭 ИСТОЧНИКИ ПЕРЕХОДОВ:"]
     lines.extend([f"• {source}: {count}" for source,count in source_rows] or ["Источники пока не отмечены."])
     lines += ["", "📥 КОНВЕРСИИ ОТ ПАРТНЁРОВ:"]
