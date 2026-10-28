@@ -2997,7 +2997,7 @@ async def tonplay_postback(request):
     if not event_id and click_id and event_type.lower() in {"register", "registration"}:
         event_id = f"{click_id}:register"
     currency = str(request.query.get("currency", "USD")).strip().upper()[:8] or "USD"
-    amount_raw = request.query.get("amount", request.query.get("payout", "0"))
+    amount_raw = request.query.get("amount", request.query.get("payout", request.query.get("amount_usd", "0")))
     try:
         amount = float(amount_raw or 0)
     except (TypeError, ValueError):
