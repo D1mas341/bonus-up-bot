@@ -782,7 +782,7 @@ async def adm_view(call: CallbackQuery):
         FROM offers WHERE id=?
         """, (oid,)).fetchone()
         clicks = con.execute(
-            "SELECT COUNT(*) FROM clicks WHERE offer_id=? AND COALESCE(click_type,'offer')!='offer_card'",
+            "SELECT COUNT(*) FROM clicks WHERE offer_id=? AND click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'",
             (oid,)
         ).fetchone()[0]
     if not row:
@@ -1435,25 +1435,25 @@ async def adm_analytics(call: CallbackQuery):
         total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today_users = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
         offer_clicks = con.execute("""
-            SELECT COUNT(*) FROM clicks WHERE COALESCE(click_type,'offer')!='offer_card'
+            SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
         """).fetchone()[0]
         card_opens = con.execute("""
             SELECT COUNT(*) FROM clicks WHERE click_type='offer_card'
         """).fetchone()[0]
         unique_users_clicked = con.execute("""
             SELECT COUNT(DISTINCT user_id) FROM clicks
-            WHERE user_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
+            WHERE user_id IS NOT NULL AND click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
         """).fetchone()[0]
         source_rows = con.execute("""
             SELECT COALESCE(NULLIF(source,''),'direct'),COUNT(*)
-            FROM clicks WHERE COALESCE(click_type,'offer')!='offer_card'
+            FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
             GROUP BY COALESCE(NULLIF(source,''),'direct')
             ORDER BY COUNT(*) DESC LIMIT 8
         """).fetchall()
         offer_rows = con.execute("""
             SELECT o.name,
-                   SUM(CASE WHEN c.id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN 1 ELSE 0 END) AS link_clicks,
-                   COUNT(DISTINCT CASE WHEN COALESCE(c.click_type,'offer')!='offer_card' THEN c.user_id END) AS known_unique_users
+                   SUM(CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN 1 ELSE 0 END) AS link_clicks,
+                   COUNT(DISTINCT CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN c.user_id END) AS known_unique_users
             FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
             GROUP BY o.id ORDER BY link_clicks DESC, o.position, o.id
         """).fetchall()
@@ -1462,7 +1462,7 @@ async def adm_analytics(call: CallbackQuery):
                    COUNT(*),
                    COUNT(DISTINCT click_id)
             FROM clicks
-            WHERE COALESCE(click_type,'offer')!='offer_card'
+            WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
             GROUP BY COALESCE(NULLIF(partner,''),'Без партнёра')
             ORDER BY COUNT(*) DESC
         """).fetchall()
@@ -1614,7 +1614,7 @@ async def adm_clicks(call: CallbackQuery):
         SELECT o.name, COUNT(c.id)
         FROM offers o
         LEFT JOIN clicks c ON c.offer_id=o.id
-            AND COALESCE(c.click_type,'offer')!='offer_card'
+            AND c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card'
         GROUP BY o.id
         ORDER BY COUNT(c.id) DESC, o.position, o.id
         """).fetchall()
@@ -1638,7 +1638,7 @@ async def adm_clickone(call: CallbackQuery):
         row = con.execute("""
         SELECT o.name, COUNT(c.id)
         FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
-            AND COALESCE(c.click_type,'offer')!='offer_card'
+            AND c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card'
         WHERE o.id=? GROUP BY o.id
         """, (oid,)).fetchone()
     if row:
