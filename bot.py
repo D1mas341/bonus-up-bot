@@ -404,6 +404,7 @@ def admin_keyboard():
     kb.button(text="➕ Добавить баннер", callback_data="adm:banneradd")
     kb.button(text="📊 Клики", callback_data="adm:clicks")
     kb.button(text="📈 Аналитика и доход", callback_data="adm:analytics")
+    kb.button(text="🧪 Диагностика базы (временно)", callback_data="adm:dbdiag")
     kb.button(text="📢 Рекламные публикации", callback_data="adm:campaigns")
     kb.button(text="✍️ Разовая текстовая рассылка", callback_data="adm:text_broadcast")
     kb.button(text="👥 Пользователи / блокировка", callback_data="adm:users")
@@ -1626,6 +1627,55 @@ async def adm_revenue_del_yes(call: CallbackQuery):
     kb.button(text="⬅️ К аналитике", callback_data="adm:analytics")
     kb.adjust(1)
     await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+
+
+@dp.callback_query(F.data == "adm:dbdiag")
+async def adm_dbdiag(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    try:
+        with closing(db()) as con:
+            click_cols = {row[1] for row in con.execute("PRAGMA table_info(clicks)").fetchall()}
+            if "created_at" not in click_cols:
+                await call.message.answer("Диагностика: в таблице clicks отсутствует поле created_at.")
+                await call.answer()
+                return
+            total, with_id, without_id, earliest, latest = con.execute("""
+                SELECT COUNT(*),
+                       SUM(CASE WHEN click_id IS NOT NULL AND TRIM(click_id)!='' THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN click_id IS NULL OR TRIM(click_id)='' THEN 1 ELSE 0 END),
+                       MIN(created_at), MAX(created_at)
+                FROM clicks
+            """).fetchone()
+            today = con.execute("SELECT COUNT(*) FROM clicks WHERE date(created_at)=date('now')").fetchone()[0]
+            last7 = con.execute("SELECT COUNT(*) FROM clicks WHERE date(created_at)>=date('now','-6 days')").fetchone()[0]
+            last30 = con.execute("SELECT COUNT(*) FROM clicks WHERE date(created_at)>=date('now','-29 days')").fetchone()[0]
+            tracked_today = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND TRIM(click_id)!='' AND date(created_at)=date('now') AND COALESCE(click_type,'offer')!='offer_card'").fetchone()[0]
+            tracked7 = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND TRIM(click_id)!='' AND date(created_at)>=date('now','-6 days') AND COALESCE(click_type,'offer')!='offer_card'").fetchone()[0]
+            tracked30 = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND TRIM(click_id)!='' AND date(created_at)>=date('now','-29 days') AND COALESCE(click_type,'offer')!='offer_card'").fetchone()[0]
+            invalid_dates = con.execute("SELECT COUNT(*) FROM clicks WHERE created_at IS NULL OR date(created_at) IS NULL").fetchone()[0]
+        msg = (
+            "🧪 ДИАГНОСТИКА БАЗЫ КЛИКОВ\n\n"
+            f"Всего строк clicks: {total or 0}\n"
+            f"С click_id: {with_id or 0}\n"
+            f"Без click_id: {without_id or 0}\n"
+            f"Все записи — сегодня: {today}\n"
+            f"Все записи — 7 дней: {last7}\n"
+            f"Все записи — 30 дней: {last30}\n\n"
+            f"Отслеживаемые переходы — сегодня: {tracked_today}\n"
+            f"Отслеживаемые переходы — 7 дней: {tracked7}\n"
+            f"Отслеживаемые переходы — 30 дней: {tracked30}\n\n"
+            f"Первая запись: {earliest or 'нет'}\n"
+            f"Последняя запись: {latest or 'нет'}\n"
+            f"Записей с некорректной датой: {invalid_dates}\n\n"
+            "Временная диагностическая функция. Пользовательские данные и секреты не выводятся."
+        )
+        await call.message.edit_text(msg, reply_markup=admin_keyboard())
+    except Exception as exc:
+        print(f"[admin-dbdiag] {type(exc).__name__}: {exc}", flush=True)
+        await call.message.answer("Диагностика не выполнена. Ошибка записана в серверный лог.")
+    await call.answer()
 
 
 @dp.callback_query(F.data == "adm:clicks")
