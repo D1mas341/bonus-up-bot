@@ -797,7 +797,7 @@ async def adm_view(call: CallbackQuery):
         f"GEO: {geo or '—'}\n"
         f"Позиция: {pos}\n"
         f"Статус: {'🟢 включён' if enabled else '🔴 выключен'}\n"
-        f"Открытий карточки: {clicks}\n\n"
+        f"Отслеживаемых переходов по ссылке: {clicks}\n\n"
         f"Ссылка:\n{url}"
     )
     kb = InlineKeyboardBuilder()
@@ -1642,7 +1642,7 @@ async def adm_clickone(call: CallbackQuery):
         WHERE o.id=? GROUP BY o.id
         """, (oid,)).fetchone()
     if row:
-        await call.answer(f"{row[0]}: {row[1]} открытий", show_alert=True)
+        await call.answer(f"{row[0]}: {row[1]} переходов", show_alert=True)
     else:
         await call.answer("Оффер не найден", show_alert=True)
 
