@@ -25,10 +25,25 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
                    (category, name, description, bonus, url, enabled, position, geo)
                    VALUES('casino', 'CI offer', '', '', 'https://affiliate.test/landing?sub={click_id}', 1, 0, 'RU')"""
             )
+            con.execute(
+                """UPDATE offers SET mini_app_url=?, site_url=? WHERE name='CI offer'""",
+                ("https://affiliate.test/mini?sub={click_id}", "https://affiliate.test/site?sub={click_id}"),
+            )
+            con.execute(
+                """INSERT INTO banners (title, url, enabled, position, clicks)
+                   VALUES ('CI banner', 'https://affiliate.test/banner?sub={click_id}', 1, 0, 0)"""
+            )
+            con.execute(
+                """INSERT INTO campaigns (title, button_url, enabled, position)
+                   VALUES ('CI campaign', 'https://affiliate.test/campaign?sub={click_id}', 1, 0)"""
+            )
             con.commit()
 
         app = web.Application()
         app.router.add_get("/go/{offer_id}", bot.go_offer)
+        app.router.add_get("/go/dual/{offer_id}/{kind}", bot.go_dual_offer)
+        app.router.add_get("/go/banner/{banner_id}", bot.go_banner)
+        app.router.add_get("/go/campaign/{campaign_id}", bot.go_campaign)
         app.router.add_post("/postback", bot.partner_postback)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
@@ -55,6 +70,31 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["utm_source"], "ci")
         self.assertEqual(row["utm_campaign"], "smoke")
         self.assertEqual(row["offer_id"], 1)
+
+    async def test_dual_offer_redirect_tracks_click(self):
+        response = await self.client.get("/go/dual/1/mini?utm_source=telegram", allow_redirects=False)
+        self.assertEqual(response.status, 302)
+        location = response.headers["Location"]
+        self.assertTrue(location.startswith("https://affiliate.test/mini?sub="), location)
+        click_id = location.split("sub=", 1)[1]
+        with bot.db() as con:
+            row = con.execute("SELECT click_type, source, offer_id FROM clicks WHERE click_id=?", (click_id,)).fetchone()
+        self.assertEqual(tuple(row), ("offer_mini", "telegram", 1))
+
+    async def test_banner_and_campaign_redirects_increment_click_counts(self):
+        banner = await self.client.get("/go/banner/1?utm_source=telegram", allow_redirects=False)
+        self.assertEqual(banner.status, 302)
+        self.assertIn("sub=", banner.headers["Location"])
+        campaign = await self.client.get("/go/campaign/1?utm_source=telegram", allow_redirects=False)
+        self.assertEqual(campaign.status, 302)
+        self.assertIn("sub=", campaign.headers["Location"])
+        with bot.db() as con:
+            banner_clicks = con.execute("SELECT clicks FROM banners WHERE id=1").fetchone()[0]
+            campaign_clicks = con.execute("SELECT click_count FROM campaigns WHERE id=1").fetchone()[0]
+            tracked = con.execute("SELECT COUNT(*) FROM clicks WHERE click_type IN ('banner','campaign')").fetchone()[0]
+        self.assertEqual(banner_clicks, 1)
+        self.assertEqual(campaign_clicks, 1)
+        self.assertEqual(tracked, 2)
 
     async def test_postback_records_conversion_and_deduplicates_event(self):
         with bot.db() as con:
