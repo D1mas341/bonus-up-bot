@@ -2755,15 +2755,14 @@ async def go_banner(request):
     source, utm_source, utm_campaign = request_attribution(request, "banner")
     with closing(db()) as con:
         row = con.execute("SELECT title,url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
-        if row:
-            click_id = log_click(con, source=source, click_type="banner",
-                                 partner=row[0], banner_id=banner_id, target_url=row[1],
-                                 utm_source=utm_source, utm_campaign=utm_campaign)
-            con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
-            con.commit()
-    if not row or not row[1].startswith(("https://", "http://")):
-        raise web.HTTPNotFound()
-    target = row[1]
+        if not row or not is_partner_url(row[1]):
+            raise web.HTTPNotFound()
+        target = row[1]
+        click_id = log_click(con, source=source, click_type="banner",
+                             partner=row[0], banner_id=banner_id, target_url=target,
+                             utm_source=utm_source, utm_campaign=utm_campaign)
+        con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
+        con.commit()
     if "{click_id}" in target:
         target = target.replace("{click_id}", click_id)
     raise web.HTTPFound(target)
@@ -2778,15 +2777,14 @@ async def go_campaign(request):
         # Existing sent cards should keep their partner link even if the admin
         # disables future sends; deleting the campaign removes this route.
         row = con.execute("SELECT title,button_url FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
-        if row and row[1].startswith(("https://", "http://")):
-            click_id = log_click(con, source=source, click_type="campaign",
-                                 partner=row[0], campaign_id=campaign_id, target_url=row[1],
-                                 utm_source=utm_source, utm_campaign=utm_campaign)
-            con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
-            con.commit()
-    if not row or not row[1].startswith(("https://", "http://")):
-        raise web.HTTPNotFound()
-    target = row[1]
+        if not row or not is_partner_url(row[1]):
+            raise web.HTTPNotFound()
+        target = row[1]
+        click_id = log_click(con, source=source, click_type="campaign",
+                             partner=row[0], campaign_id=campaign_id, target_url=target,
+                             utm_source=utm_source, utm_campaign=utm_campaign)
+        con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
+        con.commit()
     if "{click_id}" in target:
         target = target.replace("{click_id}", click_id)
     raise web.HTTPFound(target)
