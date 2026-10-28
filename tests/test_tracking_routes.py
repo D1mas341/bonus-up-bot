@@ -23,7 +23,7 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
             con.execute(
                 """INSERT INTO offers
                    (category, name, description, bonus, url, enabled, position, geo)
-                   VALUES('casino', 'CI offer', '', '', 'https://example.org/landing?sub={click_id}', 1, 0, 'RU')"""
+                   VALUES('casino', 'CI offer', '', '', 'https://affiliate.test/landing?sub={click_id}', 1, 0, 'RU')"""
             )
             con.commit()
 
@@ -40,7 +40,7 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/go/1?utm_source=ci&utm_campaign=smoke", allow_redirects=False)
         self.assertEqual(response.status, 302)
         location = response.headers["Location"]
-        self.assertTrue(location.startswith("https://example.org/landing?sub="), location)
+        self.assertTrue(location.startswith("https://affiliate.test/landing?sub="), location)
         click_id = location.split("sub=", 1)[1]
         self.assertTrue(click_id)
 
@@ -59,7 +59,7 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_postback_records_conversion_and_deduplicates_event(self):
         with bot.db() as con:
             click_id = bot.log_click(
-                con, offer_id=1, source="ci", target_url="https://example.org/landing"
+                con, offer_id=1, source="ci", target_url="https://affiliate.test/landing"
             )
             con.commit()
 
