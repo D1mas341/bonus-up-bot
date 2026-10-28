@@ -194,26 +194,28 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status, 404)
 
-    async def test_postback_rejects_partner_mismatch_for_known_click(self):
+    async def test_postback_accepts_network_id_different_from_click_display_label(self):
         with bot.db() as con:
             click_id = bot.log_click(
-                con, offer_id=1, source="ci", partner="network-a",
+                con, offer_id=1, source="ci", partner="VAVADA welcome banner",
                 target_url="https://affiliate.test/landing"
             )
             con.commit()
 
         response = await self.client.post(
             "/postback",
-            json={"click_id": click_id, "partner": "network-b", "event_id": "event-wrong-partner"},
+            json={"click_id": click_id, "partner": "vavada-network", "event_id": "event-network-label"},
             headers={"X-Postback-Secret": os.environ["POSTBACK_SECRET"]},
         )
-        self.assertEqual(response.status, 403)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.json(), {"ok": True, "recorded": True})
         with bot.db() as con:
-            count = con.execute(
-                "SELECT COUNT(*) FROM conversion_events WHERE event_id=?",
-                ("event-wrong-partner",),
-            ).fetchone()[0]
-        self.assertEqual(count, 0)
+            row = con.execute(
+                "SELECT partner, click_id FROM conversion_events WHERE event_id=?",
+                ("event-network-label",),
+            ).fetchone()
+        self.assertEqual(row["partner"], "vavada-network")
+        self.assertEqual(row["click_id"], click_id)
 
 
 if __name__ == "__main__":
