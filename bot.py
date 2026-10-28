@@ -1538,7 +1538,12 @@ async def adm_analytics(call: CallbackQuery):
     kb.button(text="📒 История доходов", callback_data="adm:revenue_history")
     kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
     kb.adjust(2, 2, 1, 1, 1)
-    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+    try:
+        await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+    except Exception as exc:
+        # Telegram returns this when the same analytics period is tapped twice.
+        if "message is not modified" not in str(exc).lower():
+            raise
     await call.answer()
 
 
@@ -1655,6 +1660,7 @@ async def adm_dbdiag(call: CallbackQuery):
             tracked7 = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND TRIM(click_id)!='' AND date(created_at)>=date('now','-6 days') AND COALESCE(click_type,'offer')!='offer_card'").fetchone()[0]
             tracked30 = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND TRIM(click_id)!='' AND date(created_at)>=date('now','-29 days') AND COALESCE(click_type,'offer')!='offer_card'").fetchone()[0]
             invalid_dates = con.execute("SELECT COUNT(*) FROM clicks WHERE created_at IS NULL OR date(created_at) IS NULL").fetchone()[0]
+            by_day = con.execute("""SELECT date(created_at), COUNT(*) FROM clicks WHERE date(created_at) >= date('now', '-6 days') GROUP BY date(created_at) ORDER BY date(created_at)""").fetchall()
         msg = (
             "🧪 ДИАГНОСТИКА БАЗЫ КЛИКОВ\n\n"
             f"Всего строк clicks: {total or 0}\n"
@@ -1669,6 +1675,7 @@ async def adm_dbdiag(call: CallbackQuery):
             f"Первая запись: {earliest or 'нет'}\n"
             f"Последняя запись: {latest or 'нет'}\n"
             f"Записей с некорректной датой: {invalid_dates}\n\n"
+            "Клики по дням (последние 7 дней):\n" + ("\n".join(f"{day}: {count}" for day, count in by_day) or "Нет записей за последние 7 дней") + "\n\n"
             "Временная диагностическая функция. Пользовательские данные и секреты не выводятся."
         )
         await call.message.edit_text(msg, reply_markup=admin_keyboard())
