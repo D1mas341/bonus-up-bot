@@ -2921,14 +2921,11 @@ async def partner_postback(request):
         ).fetchone()
         if not known_click:
             raise web.HTTPNotFound(text="Unknown click_id.")
-        # The tracking route stores the expected partner label alongside the
-        # click. A postback may only credit that same label, preventing a valid
-        # click ID from being attributed to a different partner.
-        expected_partner = (known_click["partner"] or "").strip()
-        if not expected_partner or not hmac.compare_digest(
-            expected_partner.casefold(), partner.casefold()
-        ):
-            raise web.HTTPForbidden(text="Partner does not match click_id.")
+        # The clicks.partner field is currently a display label (often an
+        # offer, banner, or campaign title), not a stable affiliate-network ID.
+        # Do not compare it with the partner's postback identifier: that rejects
+        # legitimate conversions. The authenticated secret and unique click_id
+        # bind this event to a tracked click; preserve the network ID from payload.
         try:
             con.execute(
                 """INSERT INTO conversion_events
