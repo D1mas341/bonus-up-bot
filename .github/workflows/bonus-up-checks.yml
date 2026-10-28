@@ -2,7 +2,7 @@ name: BONUS UP branch checks
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feature/analytics-click-tracking]
     paths:
       - "bot.py"
       - "requirements.txt"
