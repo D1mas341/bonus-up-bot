@@ -40,6 +40,7 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
             con.commit()
 
         app = web.Application()
+        app.router.add_get("/api/tracking-token", bot.api_tracking_token)
         app.router.add_get("/go/{offer_id}", bot.go_offer)
         app.router.add_get("/go/dual/{offer_id}/{kind}", bot.go_dual_offer)
         app.router.add_get("/go/banner/{banner_id}", bot.go_banner)
@@ -120,6 +121,30 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["utm_source"], "ci")
         self.assertEqual(row["utm_campaign"], "smoke")
         self.assertEqual(row["offer_id"], 1)
+
+    async def test_signed_tracking_token_attaches_telegram_user_to_click(self):
+        token = bot.make_tracking_token(123456)
+        response = await self.client.get(
+            f"/go/1?track={token}", allow_redirects=False
+        )
+        self.assertEqual(response.status, 302)
+        with bot.db() as con:
+            row = con.execute(
+                "SELECT user_id FROM clicks WHERE click_id IS NOT NULL ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(row["user_id"], 123456)
+
+    async def test_tampered_tracking_token_does_not_attach_user(self):
+        token = bot.make_tracking_token(123456)[:-1] + ("0" if bot.make_tracking_token(123456)[-1] != "0" else "1")
+        response = await self.client.get(
+            f"/go/1?track={token}", allow_redirects=False
+        )
+        self.assertEqual(response.status, 302)
+        with bot.db() as con:
+            row = con.execute(
+                "SELECT user_id FROM clicks WHERE click_id IS NOT NULL ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNone(row["user_id"])
 
     async def test_dual_offer_redirect_tracks_click(self):
         response = await self.client.get("/go/dual/1/mini?utm_source=telegram", allow_redirects=False)
