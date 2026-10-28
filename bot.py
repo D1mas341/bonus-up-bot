@@ -1463,93 +1463,80 @@ async def adm_camp_send(call: CallbackQuery):
     )
 
 
-@dp.callback_query(F.data == "adm:analytics")
+@dp.callback_query(F.data.startswith("adm:analytics"))
 async def adm_analytics(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
+    period = call.data.split(":", 2)[2] if call.data.count(":") >= 2 else "all"
+    periods = {"today": ("Сегодня", "-0 days"), "7d": ("7 дней", "-6 days"), "30d": ("30 дней", "-29 days"), "all": ("Всё время", None)}
+    if period not in periods:
+        period = "all"
+    period_label, offset = periods[period]
+    date_filter = " AND date(created_at) >= date('now', ?)" if offset else ""
+    click_filter = " AND date(c.created_at) >= date('now', ?)" if offset else ""
+    params = (offset,) if offset else ()
     with closing(db()) as con:
         total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today_users = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-        offer_clicks = con.execute("""
-            SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
-        """).fetchone()[0]
-        card_opens = con.execute("""
-            SELECT COUNT(*) FROM clicks WHERE click_type='offer_card'
-        """).fetchone()[0]
-        unique_users_clicked = con.execute("""
-            SELECT COUNT(DISTINCT user_id) FROM clicks
-            WHERE user_id IS NOT NULL AND click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
-        """).fetchone()[0]
-        source_rows = con.execute("""
-            SELECT COALESCE(NULLIF(source,''),'direct'),COUNT(*)
-            FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
-            GROUP BY COALESCE(NULLIF(source,''),'direct')
-            ORDER BY COUNT(*) DESC LIMIT 8
-        """).fetchall()
+        click_count = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'" + date_filter, params).fetchone()[0]
+        unique_users = con.execute("SELECT COUNT(DISTINCT user_id) FROM clicks WHERE user_id IS NOT NULL AND click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'" + date_filter, params).fetchone()[0]
+        card_opens = con.execute("SELECT COUNT(*) FROM clicks WHERE click_type='offer_card'" + date_filter, params).fetchone()[0]
         offer_rows = con.execute("""
             SELECT o.name,
-                   SUM(CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN 1 ELSE 0 END) AS link_clicks,
-                   COUNT(DISTINCT CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN c.user_id END) AS known_unique_users
-            FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
-            GROUP BY o.id ORDER BY link_clicks DESC, o.position, o.id
-        """).fetchall()
-        partner_click_rows = con.execute("""
-            SELECT COALESCE(NULLIF(partner,''),'Без партнёра'),
-                   COUNT(*),
-                   COUNT(DISTINCT click_id)
-            FROM clicks
-            WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
-            GROUP BY COALESCE(NULLIF(partner,''),'Без партнёра')
-            ORDER BY COUNT(*) DESC
-        """).fetchall()
-        campaign_rows = con.execute("SELECT title,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
-        revenue_rows = con.execute("SELECT currency,COALESCE(SUM(amount),0) FROM revenue_entries GROUP BY currency ORDER BY currency").fetchall()
-        partner_rows = con.execute("SELECT partner,currency,COALESCE(SUM(amount),0),COUNT(*) FROM revenue_entries GROUP BY partner,currency ORDER BY partner,currency").fetchall()
-        conversion_rows = con.execute("""
+                   SUM(CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN 1 ELSE 0 END),
+                   COUNT(DISTINCT CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN c.user_id END)
+            FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id""" + click_filter + """
+            GROUP BY o.id ORDER BY 2 DESC, o.position, o.id
+        """, params).fetchall()
+        partner_rows = con.execute("""
+            SELECT COALESCE(NULLIF(partner,''),'Без партнёра'), currency, COUNT(*), COALESCE(SUM(amount),0)
+            FROM conversion_events WHERE 1=1""" + date_filter + """
+            GROUP BY partner,currency ORDER BY partner,currency
+        """, params).fetchall()
+        event_rows = con.execute("""
             SELECT partner,event_type,COUNT(*),COALESCE(SUM(amount),0),currency
-            FROM conversion_events GROUP BY partner,event_type,currency
-            ORDER BY partner,event_type,currency
-        """).fetchall()
+            FROM conversion_events WHERE 1=1""" + date_filter + """
+            GROUP BY partner,event_type,currency ORDER BY partner,event_type,currency
+        """, params).fetchall()
+        revenue_rows = con.execute("""
+            SELECT partner,currency,COALESCE(SUM(amount),0),COUNT(*)
+            FROM revenue_entries WHERE 1=1""" + date_filter + """
+            GROUP BY partner,currency ORDER BY partner,currency
+        """, params).fetchall()
+        campaign_rows = con.execute("SELECT title,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
+        source_rows = con.execute("""
+            SELECT COALESCE(NULLIF(source,''),'direct'),COUNT(*) FROM clicks
+            WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'""" + date_filter + """
+            GROUP BY COALESCE(NULLIF(source,''),'direct') ORDER BY COUNT(*) DESC LIMIT 8
+        """, params).fetchall()
     lines = [
-        "📈 АНАЛИТИКА И ДОХОД", "",
+        f"📈 АНАЛИТИКА ПАРТНЁРОК — {period_label}", "",
         f"👥 Всего пользователей: {total_users}",
         f"🆕 Новых сегодня (UTC): {today_users}",
-        f"🔗 Переходов по партнёрским ссылкам: {offer_clicks}",
-        f"👤 Пользователей с отслеживаемыми переходами: {unique_users_clicked}",
-        f"👁 Открытий карточек офферов в боте: {card_opens}", "",
+        f"🔗 Переходов по партнёрским ссылкам: {click_count}",
+        f"👤 Пользователей с отслеживаемыми переходами: {unique_users}",
+        f"👁 Открытий карточек офферов: {card_opens}", "",
         "🎁 ПЕРЕХОДЫ ПО ОФФЕРАМ:"
     ]
-    lines.extend([
-        f"• {row[0]}: {row[1]} кликов; известных пользователей: {row[2]}"
-        for row in offer_rows
-    ] or ["Пока нет данных по офферам."])
-    lines += ["", "🏷 ГРУППИРОВКА ПО ПОДПИСИ ССЫЛКИ:"]
-    lines.extend([
-        f"• {label}: {count} переходов"
-        for label,count,_unique in partner_click_rows
-    ] or ["Пока нет данных по ссылкам."])
-    lines.append("Примечание: подпись здесь может быть названием оффера, баннера или кампании; это не подтверждённая статистика по партнёрским сетям.")
+    lines.extend([f"• {name}: {count or 0} кликов; пользователей: {users or 0}" for name,count,users in offer_rows] or ["Пока нет данных по офферам."])
     lines += ["", "🧭 ИСТОЧНИКИ ПЕРЕХОДОВ:"]
     lines.extend([f"• {source}: {count}" for source,count in source_rows] or ["Источники пока не отмечены."])
     lines += ["", "📥 КОНВЕРСИИ ОТ ПАРТНЁРОВ:"]
-    lines.extend([
-        f"• {partner} — {event_type}: {count}; сумма {amount:.2f} {currency}"
-        for partner,event_type,count,amount,currency in conversion_rows
-    ] or ["Пока нет подтверждённых postback-конверсий."])
+    lines.extend([f"• {partner} — {event}: {count}; сумма {amount:.2f} {currency}" for partner,event,count,amount,currency in event_rows] or ["Пока нет подтверждённых postback-конверсий."])
+    lines += ["", "💰 ДОХОД, ЗАНЕСЁННЫЙ ВРУЧНУЮ:"]
+    lines.extend([f"• {partner}: {amount:.2f} {currency} ({count} запис.)" for partner,currency,amount,count in revenue_rows] or ["Пока доход не добавлен."])
     lines += ["", "📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ:"]
     lines.extend([f"• {title or 'Без названия'}: отправок {sent}, нажатий {clicks}" for title,sent,clicks in campaign_rows] or ["Публикаций пока нет."])
-    lines += ["", "💰 ДОХОД, ЗАНЕСЁННЫЙ ВРУЧНУЮ:"]
-    lines.extend([f"• {currency}: {amount:.2f}" for currency,amount in revenue_rows] or ["Пока доход не добавлен."])
-    if partner_rows:
-        lines += ["", "ПО ПАРТНЁРАМ:"]
-        lines.extend([f"• {partner} — {amount:.2f} {currency} ({count} запис.)" for partner,currency,amount,count in partner_rows])
-    lines += ["", "Доход пока вводится вручную из партнёрских кабинетов. Автосинхронизация возможна, если партнёрка предоставляет подходящий API или отчёт."]
     kb = InlineKeyboardBuilder()
+    kb.button(text="📅 Сегодня", callback_data="adm:analytics:today")
+    kb.button(text="📅 7 дней", callback_data="adm:analytics:7d")
+    kb.button(text="📅 30 дней", callback_data="adm:analytics:30d")
+    kb.button(text="📊 Всё время", callback_data="adm:analytics:all")
     kb.button(text="➕ Добавить доход", callback_data="adm:revenue_add")
     kb.button(text="📒 История доходов", callback_data="adm:revenue_history")
     kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
-    kb.adjust(1)
+    kb.adjust(2, 2, 1, 1, 1)
     await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
 
