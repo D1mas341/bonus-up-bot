@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 import uuid
 from io import BytesIO
@@ -91,8 +92,47 @@ def webapp_access_denied(request):
     return None
 
 
+
+
+def parse_callback_id(data: str, position: int = -1, *, from_right: bool = False) -> int:
+    """Return a positive numeric callback ID, or 0 for malformed/stale callback data."""
+    try:
+        parts = data.rsplit(":", 1) if from_right else data.split(":")
+        value = int(parts[position])
+        return value if value > 0 else 0
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return 0
+
+
 def db():
-    return sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout=30000")
+    return con
+
+
+def log_click(con, *, user_id=None, offer_id=None, source="", click_type="offer",
+              partner="", banner_id=None, campaign_id=None, target_url="",
+              utm_source="", utm_campaign=""):
+    """Persist one click while keeping old click totals and records compatible."""
+    click_id = uuid.uuid4().hex
+    con.execute(
+        """INSERT INTO clicks
+           (user_id,offer_id,click_id,source,click_type,partner,banner_id,campaign_id,
+            target_url,utm_source,utm_campaign)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (user_id, offer_id, click_id, source or "direct", click_type, partner or "",
+         banner_id, campaign_id, target_url or "", utm_source or "", utm_campaign or "")
+    )
+    return click_id
+
+
+def request_attribution(request, default_source="direct"):
+    source = (request.query.get("source") or request.query.get("ref") or
+              request.query.get("utm_source") or default_source)[:120]
+    utm_source = (request.query.get("utm_source") or "")[:120]
+    utm_campaign = (request.query.get("utm_campaign") or "")[:160]
+    return source, utm_source, utm_campaign
 
 
 def init_db():
@@ -134,6 +174,38 @@ def init_db():
             user_id INTEGER,
             offer_id INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        # Additive click migrations preserve all historical rows and counters.
+        click_cols = [r[1] for r in con.execute("PRAGMA table_info(clicks)").fetchall()]
+        for col, definition in [
+            ("click_id", "TEXT"),
+            ("source", "TEXT DEFAULT ''"),
+            ("click_type", "TEXT DEFAULT 'offer'"),
+            ("partner", "TEXT DEFAULT ''"),
+            ("banner_id", "INTEGER"),
+            ("campaign_id", "INTEGER"),
+            ("target_url", "TEXT DEFAULT ''"),
+            ("utm_source", "TEXT DEFAULT ''"),
+            ("utm_campaign", "TEXT DEFAULT ''"),
+        ]:
+            if col not in click_cols:
+                con.execute(f"ALTER TABLE clicks ADD COLUMN {col} {definition}")
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clicks_click_id ON clicks(click_id) WHERE click_id IS NOT NULL")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_clicks_created_at ON clicks(created_at)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_clicks_source ON clicks(source)")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS conversion_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            click_id TEXT NOT NULL,
+            partner TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT 'conversion',
+            event_id TEXT DEFAULT '',
+            amount REAL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'EUR',
+            payload TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(partner, event_id)
         )
         """)
         # Additive migrations preserve existing partner links and offers.
@@ -594,7 +666,10 @@ async def home(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("offer:"))
 async def offer(call: CallbackQuery):
-    offer_id = int(call.data.split(":")[1])
+    offer_id = parse_callback_id(call.data, 1)
+    if not offer_id:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("""
         SELECT category,name,description,bonus,url,geo
@@ -604,10 +679,9 @@ async def offer(call: CallbackQuery):
         if row:
             # This records an offer-card opening. Telegram does not tell the bot
             # when the external URL button itself is clicked.
-            con.execute(
-                "INSERT INTO clicks(user_id,offer_id) VALUES(?,?)",
-                (call.from_user.id, offer_id)
-            )
+            log_click(con, user_id=call.from_user.id, offer_id=offer_id,
+                      source="telegram_bot", click_type="offer_card",
+                      partner=row[1], target_url=row[4])
             con.commit()
     if not row:
         await call.answer("Предложение больше недоступно.", show_alert=True)
@@ -622,7 +696,9 @@ async def offer(call: CallbackQuery):
     text += "\n18+. Условия и доступность зависят от страны и правил оператора."
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="🎁 ПОЛУЧИТЬ ПРЕДЛОЖЕНИЕ", url=url)
+    base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+    tracked_url = f"{base_url}/go/{offer_id}" if base_url else url
+    kb.button(text="🎁 ПОЛУЧИТЬ ПРЕДЛОЖЕНИЕ", url=tracked_url)
     kb.button(text="⬅️ Назад", callback_data=f"back:{category}")
     kb.adjust(1)
     await call.message.edit_text(text, reply_markup=kb.as_markup())
@@ -696,14 +772,18 @@ async def adm_view(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("""
         SELECT id,category,name,description,bonus,url,enabled,position,geo
         FROM offers WHERE id=?
         """, (oid,)).fetchone()
         clicks = con.execute(
-            "SELECT COUNT(*) FROM clicks WHERE offer_id=?", (oid,)
+            "SELECT COUNT(*) FROM clicks WHERE offer_id=? AND click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'",
+            (oid,)
         ).fetchone()[0]
     if not row:
         await call.answer("Оффер не найден", show_alert=True)
@@ -717,7 +797,7 @@ async def adm_view(call: CallbackQuery):
         f"GEO: {geo or '—'}\n"
         f"Позиция: {pos}\n"
         f"Статус: {'🟢 включён' if enabled else '🔴 выключен'}\n"
-        f"Открытий карточки: {clicks}\n\n"
+        f"Отслеживаемых переходов по ссылке: {clicks}\n\n"
         f"Ссылка:\n{url}"
     )
     kb = InlineKeyboardBuilder()
@@ -749,7 +829,10 @@ async def adm_editone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {
         "action": "edit", "step": "name", "offer_id": oid, "data": {}
     }
@@ -778,7 +861,10 @@ async def adm_linkone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {
         "action": "link", "step": "url", "offer_id": oid
     }
@@ -806,7 +892,10 @@ async def adm_toggleone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute(
             "UPDATE offers SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?",
@@ -853,7 +942,10 @@ async def adm_visibilityone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name,COALESCE(hidden,0) FROM offers WHERE id=?", (oid,)).fetchone()
         if row:
@@ -881,7 +973,10 @@ async def adm_deleteone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name FROM offers WHERE id=?", (oid,)).fetchone()
     if not row:
@@ -900,7 +995,10 @@ async def adm_deleteconfirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name FROM offers WHERE id=?", (oid,)).fetchone()
         if row:
@@ -958,7 +1056,10 @@ async def adm_unblock(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute("DELETE FROM blocked_users WHERE user_id=?", (uid,))
         con.commit()
@@ -971,7 +1072,10 @@ async def adm_block_confirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     if is_admin(uid):
         await call.answer("Нельзя блокировать администратора.", show_alert=True)
         return
@@ -988,7 +1092,10 @@ async def adm_block_preview(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     if is_admin(uid):
         await call.answer("Нельзя блокировать администратора.", show_alert=True)
         return
@@ -1060,7 +1167,10 @@ async def adm_user_open(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    uid = int(call.data.rsplit(":", 1)[1])
+    uid = parse_callback_id(call.data, from_right=True)
+    if not uid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT user_id,username,first_name,created_at,source FROM users WHERE user_id=?", (uid,)).fetchone()
         blocked = con.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (uid,)).fetchone()
@@ -1179,7 +1289,10 @@ async def adm_camp_toggle(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    cid = int(call.data.rsplit(":",1)[1])
+    cid = parse_callback_id(call.data, from_right=True)
+    if not cid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT enabled,COALESCE(placement,'broadcast') FROM campaigns WHERE id=?", (cid,)).fetchone()
         if not row:
@@ -1210,7 +1323,10 @@ async def adm_camp_delete(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    cid = int(call.data.rsplit(":",1)[1])
+    cid = parse_callback_id(call.data, from_right=True)
+    if not cid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         sent_rows = con.execute(
             "SELECT user_id,message_id FROM campaign_delivery_messages WHERE campaign_id=?",
@@ -1248,7 +1364,10 @@ async def adm_camp_send(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    cid = int(call.data.rsplit(":", 1)[1])
+    cid = parse_callback_id(call.data, from_right=True)
+    if not cid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         campaign = con.execute(
             "SELECT title,body,media_type,media_file_id,button_text,button_url FROM campaigns WHERE id=?",
@@ -1315,23 +1434,72 @@ async def adm_analytics(call: CallbackQuery):
     with closing(db()) as con:
         total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today_users = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-        offer_clicks = con.execute("SELECT COUNT(*) FROM clicks").fetchone()[0]
+        offer_clicks = con.execute("""
+            SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
+        """).fetchone()[0]
+        card_opens = con.execute("""
+            SELECT COUNT(*) FROM clicks WHERE click_type='offer_card'
+        """).fetchone()[0]
+        unique_users_clicked = con.execute("""
+            SELECT COUNT(DISTINCT user_id) FROM clicks
+            WHERE user_id IS NOT NULL AND click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
+        """).fetchone()[0]
+        source_rows = con.execute("""
+            SELECT COALESCE(NULLIF(source,''),'direct'),COUNT(*)
+            FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
+            GROUP BY COALESCE(NULLIF(source,''),'direct')
+            ORDER BY COUNT(*) DESC LIMIT 8
+        """).fetchall()
         offer_rows = con.execute("""
-            SELECT o.name, COUNT(c.id) AS clicks
+            SELECT o.name,
+                   SUM(CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN 1 ELSE 0 END) AS link_clicks,
+                   COUNT(DISTINCT CASE WHEN c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card' THEN c.user_id END) AS known_unique_users
             FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
-            GROUP BY o.id ORDER BY clicks DESC, o.position, o.id
+            GROUP BY o.id ORDER BY link_clicks DESC, o.position, o.id
+        """).fetchall()
+        partner_click_rows = con.execute("""
+            SELECT COALESCE(NULLIF(partner,''),'Без партнёра'),
+                   COUNT(*),
+                   COUNT(DISTINCT click_id)
+            FROM clicks
+            WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'
+            GROUP BY COALESCE(NULLIF(partner,''),'Без партнёра')
+            ORDER BY COUNT(*) DESC
         """).fetchall()
         campaign_rows = con.execute("SELECT title,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
         revenue_rows = con.execute("SELECT currency,COALESCE(SUM(amount),0) FROM revenue_entries GROUP BY currency ORDER BY currency").fetchall()
         partner_rows = con.execute("SELECT partner,currency,COALESCE(SUM(amount),0),COUNT(*) FROM revenue_entries GROUP BY partner,currency ORDER BY partner,currency").fetchall()
+        conversion_rows = con.execute("""
+            SELECT partner,event_type,COUNT(*),COALESCE(SUM(amount),0),currency
+            FROM conversion_events GROUP BY partner,event_type,currency
+            ORDER BY partner,event_type,currency
+        """).fetchall()
     lines = [
         "📈 АНАЛИТИКА И ДОХОД", "",
         f"👥 Всего пользователей: {total_users}",
         f"🆕 Новых сегодня (UTC): {today_users}",
-        f"🔗 Переходов по ссылкам офферов: {offer_clicks}", "",
+        f"🔗 Переходов по партнёрским ссылкам: {offer_clicks}",
+        f"👤 Пользователей с отслеживаемыми переходами: {unique_users_clicked}",
+        f"👁 Открытий карточек офферов в боте: {card_opens}", "",
         "🎁 ПЕРЕХОДЫ ПО ОФФЕРАМ:"
     ]
-    lines.extend([f"• {name}: {count}" for name,count in offer_rows] or ["Пока нет данных по офферам."])
+    lines.extend([
+        f"• {row[0]}: {row[1]} кликов; известных пользователей: {row[2]}"
+        for row in offer_rows
+    ] or ["Пока нет данных по офферам."])
+    lines += ["", "🏷 ГРУППИРОВКА ПО ПОДПИСИ ССЫЛКИ:"]
+    lines.extend([
+        f"• {label}: {count} переходов"
+        for label,count,_unique in partner_click_rows
+    ] or ["Пока нет данных по ссылкам."])
+    lines.append("Примечание: подпись здесь может быть названием оффера, баннера или кампании; это не подтверждённая статистика по партнёрским сетям.")
+    lines += ["", "🧭 ИСТОЧНИКИ ПЕРЕХОДОВ:"]
+    lines.extend([f"• {source}: {count}" for source,count in source_rows] or ["Источники пока не отмечены."])
+    lines += ["", "📥 КОНВЕРСИИ ОТ ПАРТНЁРОВ:"]
+    lines.extend([
+        f"• {partner} — {event_type}: {count}; сумма {amount:.2f} {currency}"
+        for partner,event_type,count,amount,currency in conversion_rows
+    ] or ["Пока нет подтверждённых postback-конверсий."])
     lines += ["", "📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ:"]
     lines.extend([f"• {title or 'Без названия'}: отправок {sent}, нажатий {clicks}" for title,sent,clicks in campaign_rows] or ["Публикаций пока нет."])
     lines += ["", "💰 ДОХОД, ЗАНЕСЁННЫЙ ВРУЧНУЮ:"]
@@ -1386,7 +1554,10 @@ async def adm_revenue_del_confirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    rid = int(call.data.rsplit(":", 1)[1])
+    rid = parse_callback_id(call.data, from_right=True)
+    if not rid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT partner,amount,currency FROM revenue_entries WHERE id=?", (rid,)).fetchone()
     if not row:
@@ -1408,7 +1579,10 @@ async def adm_revenue_del_yes(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    rid = int(call.data.rsplit(":", 1)[1])
+    rid = parse_callback_id(call.data, from_right=True)
+    if not rid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         cur = con.execute("DELETE FROM revenue_entries WHERE id=?", (rid,))
         con.commit()
@@ -1440,6 +1614,7 @@ async def adm_clicks(call: CallbackQuery):
         SELECT o.name, COUNT(c.id)
         FROM offers o
         LEFT JOIN clicks c ON c.offer_id=o.id
+            AND c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card'
         GROUP BY o.id
         ORDER BY COUNT(c.id) DESC, o.position, o.id
         """).fetchall()
@@ -1455,15 +1630,19 @@ async def adm_clickone(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("""
         SELECT o.name, COUNT(c.id)
         FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
+            AND c.click_id IS NOT NULL AND COALESCE(c.click_type,'offer')!='offer_card'
         WHERE o.id=? GROUP BY o.id
         """, (oid,)).fetchone()
     if row:
-        await call.answer(f"{row[0]}: {row[1]} открытий", show_alert=True)
+        await call.answer(f"{row[0]}: {row[1]} переходов", show_alert=True)
     else:
         await call.answer("Оффер не найден", show_alert=True)
 
@@ -1482,7 +1661,10 @@ async def adm_promoon(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name,promo_code,logo_url FROM offers WHERE id=?", (oid,)).fetchone()
     if not row:
@@ -1508,7 +1690,10 @@ async def adm_promocode(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {"action":"promo_code_only","step":"promo_code","offer_id":oid,"data":{}}
     await call.message.edit_text("✏️ Отправь новый промокод. Чтобы удалить существующий, отправь -.")
     await call.answer()
@@ -1519,7 +1704,10 @@ async def adm_offerlogo(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     admin_state[call.from_user.id] = {"action":"logo_only","step":"logo_url","offer_id":oid,"data":{}}
     await call.message.edit_text("🖼 Отправь логотип изображением (можно как фото или как файл JPG/PNG до 1,5 МБ) либо прямую HTTPS-ссылку. Промокод не изменится. Для отмены напиши «отмена».")
     await call.answer()
@@ -1530,7 +1718,10 @@ async def adm_clearlogo(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute("UPDATE offers SET logo_url='' WHERE id=?", (oid,))
         con.commit()
@@ -1559,7 +1750,10 @@ async def adm_dualoffer(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    oid = int(call.data.split(":")[2])
+    oid = parse_callback_id(call.data, 2)
+    if not oid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT name,mini_app_url,site_url FROM offers WHERE id=?", (oid,)).fetchone()
     if not row:
@@ -1623,7 +1817,10 @@ async def adm_bannertoggle(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         con.execute("UPDATE banners SET enabled=CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id=?", (bid,))
         con.commit()
@@ -1636,7 +1833,10 @@ async def adm_banneredit(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
     if not row:
@@ -1695,7 +1895,10 @@ async def adm_bannerdelete(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
     if not row:
@@ -1718,7 +1921,10 @@ async def adm_bannerdeleteconfirm(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
-    bid = int(call.data.split(":")[2])
+    bid = parse_callback_id(call.data, 2)
+    if not bid:
+        await call.answer("Кнопка устарела. Откройте меню заново.", show_alert=True)
+        return
     with closing(db()) as con:
         row = con.execute("SELECT title FROM banners WHERE id=?", (bid,)).fetchone()
         con.execute("DELETE FROM banners WHERE id=?", (bid,))
@@ -2467,7 +2673,7 @@ function openModal(id){const x=all.find(item=>item.id===id);if(!x)return;selecte
 modal.innerHTML='<div class="modalhead"><div class="modal-logo">'+logoHtml(x,"modal-logo")+'</div><div style="min-width:0;flex:1"><div class="badges">'+bonusBadges(x.bonus)+'</div><div class="modal-title" style="margin-top:8px">'+esc(x.name)+'</div></div><button class="modal-close" id="closeModal" aria-label="'+esc(t("close"))+'">×</button></div>'+
 '<div class="modal-section"><div class="muted-label">'+esc(t("about"))+'</div><div class="description">'+esc(x.description||t("description"))+'</div></div>'+
 (x.promo?'<div class="modal-section"><div class="muted-label">'+esc(t("promoCode"))+'</div><div class="promo-large"><div class="promo-value">'+esc(x.promo)+'</div><button class="copy" id="modalCopy">'+esc(t("copy"))+'</button></div></div>':'')+
-((x.mini_app_url||x.site_url)?((x.mini_app_url?'<a class="play tonplay-telegram" href="'+esc(x.mini_app_url)+'" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+(x.site_url?'<a class="play tonplay-site" href="/go/dual/'+Number(x.id)+'/site" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'')):(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>'))+
+((x.mini_app_url||x.site_url)?((x.mini_app_url?'<a class="play tonplay-telegram" href="/go/dual/'+Number(x.id)+'/mini" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+(x.site_url?'<a class="play tonplay-site" href="/go/dual/'+Number(x.id)+'/site" target="_blank" rel="noopener">🌐 Играть на сайте</a>':'')):(hasPartnerLink(x)?'<a class="play" href="/go/'+Number(x.id)+'" target="_blank" rel="noopener">'+esc(t("play"))+'</a>':'<div class="play" style="opacity:.6;cursor:not-allowed;background:#3a362b;color:#d0c8b5">'+esc(t("linkSoon"))+'</div>'))+
 (other.length?'<div class="other-title">'+esc(t(x.category==="bets"?"otherBets":"otherGames"))+'</div><div class="other-grid">'+other.map(o=>hasPartnerLink(o)?'<a class="mini-game" href="/go/'+Number(o.id)+'" target="_blank" rel="noopener"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("open"))+'</span></span></a>':'<div class="mini-game" style="opacity:.55"><span class="mini-logo">'+logoHtml(o,"mini-logo")+'</span><span style="min-width:0"><span class="mini-name" style="display:block">'+esc(o.name)+'</span><span class="mini-link">'+esc(t("soon"))+'</span></span></div>').join("")+'</div>':'');
 document.getElementById("modalBackdrop").classList.add("open");document.body.style.overflow="hidden";
 document.getElementById("closeModal").onclick=closeModal;
@@ -2593,14 +2799,20 @@ async def go_offer(request):
         offer_id = int(request.match_info["offer_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request, "offer")
     with closing(db()) as con:
-        row = con.execute("SELECT url FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
+        row = con.execute("SELECT url,name FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
         if row and is_partner_url(row[0]):
-            con.execute("INSERT INTO clicks(user_id,offer_id) VALUES(NULL,?)", (offer_id,))
+            click_id = log_click(con, offer_id=offer_id, source=source,
+                                 click_type="offer", partner=row[1], target_url=row[0],
+                                 utm_source=utm_source, utm_campaign=utm_campaign)
             con.commit()
     if not row or not is_partner_url(row[0]):
         raise web.HTTPNotFound(text="Партнёрская ссылка ещё не подключена.")
-    raise web.HTTPFound(row[0])
+    target = row[0]
+    if "{click_id}" in target:
+        target = target.replace("{click_id}", click_id)
+    raise web.HTTPFound(target)
 
 async def go_dual_offer(request):
     try:
@@ -2610,9 +2822,10 @@ async def go_dual_offer(request):
         raise web.HTTPNotFound()
     if kind not in {"mini", "site"}:
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request, "offer")
     with closing(db()) as con:
         row = con.execute(
-            "SELECT mini_app_url,site_url,enabled FROM offers WHERE id=?",
+            "SELECT mini_app_url,site_url,enabled,name FROM offers WHERE id=?",
             (offer_id,)
         ).fetchone()
         if not row or not row[2]:
@@ -2620,10 +2833,12 @@ async def go_dual_offer(request):
         target = row[0] if kind == "mini" else row[1]
         if not is_partner_url(target):
             raise web.HTTPNotFound(text="Ссылка для этого направления не настроена.")
-        click_id = uuid.uuid4().hex
-        con.execute("INSERT INTO clicks(user_id,offer_id) VALUES(NULL,?)", (offer_id,))
+        click_id = log_click(con, offer_id=offer_id, source=source,
+                             click_type=f"offer_{kind}", partner=row[3],
+                             target_url=target, utm_source=utm_source,
+                             utm_campaign=utm_campaign)
         con.commit()
-    if kind == "site" and "{click_id}" in target:
+    if "{click_id}" in target:
         target = target.replace("{click_id}", click_id)
     raise web.HTTPFound(target)
 
@@ -2633,30 +2848,89 @@ async def go_banner(request):
         banner_id = int(request.match_info["banner_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request, "banner")
     with closing(db()) as con:
-        row = con.execute("SELECT url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
-        if row:
-            con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
-            con.commit()
-    if not row or not row[0].startswith(("https://", "http://")):
-        raise web.HTTPNotFound()
-    raise web.HTTPFound(row[0])
+        row = con.execute("SELECT title,url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
+        if not row or not is_partner_url(row[1]):
+            raise web.HTTPNotFound()
+        target = row[1]
+        click_id = log_click(con, source=source, click_type="banner",
+                             partner=row[0], banner_id=banner_id, target_url=target,
+                             utm_source=utm_source, utm_campaign=utm_campaign)
+        con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
+        con.commit()
+    if "{click_id}" in target:
+        target = target.replace("{click_id}", click_id)
+    raise web.HTTPFound(target)
 
 async def go_campaign(request):
     try:
         campaign_id = int(request.match_info["campaign_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request, "campaign")
     with closing(db()) as con:
         # Existing sent cards should keep their partner link even if the admin
         # disables future sends; deleting the campaign removes this route.
-        row = con.execute("SELECT button_url FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
-        if row and row[0].startswith(("https://", "http://")):
-            con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
+        row = con.execute("SELECT title,button_url FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if not row or not is_partner_url(row[1]):
+            raise web.HTTPNotFound()
+        target = row[1]
+        click_id = log_click(con, source=source, click_type="campaign",
+                             partner=row[0], campaign_id=campaign_id, target_url=target,
+                             utm_source=utm_source, utm_campaign=utm_campaign)
+        con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
+        con.commit()
+    if "{click_id}" in target:
+        target = target.replace("{click_id}", click_id)
+    raise web.HTTPFound(target)
+
+
+async def partner_postback(request):
+    """Optional authenticated affiliate postback endpoint; disabled until secret is configured."""
+    expected_secret = os.getenv("POSTBACK_SECRET", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="Partner postbacks are not configured.")
+    supplied_secret = request.headers.get("X-Postback-Secret", "")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+    # Accept only a JSON object over POST. Do not silently treat query parameters
+    # as a postback payload: they are easier to leak into logs and browser history.
+    try:
+        data = await request.json()
+    except (json.JSONDecodeError, ValueError, TypeError):
+        raise web.HTTPBadRequest(text="Expected a JSON object.")
+    if not isinstance(data, dict):
+        raise web.HTTPBadRequest(text="Expected a JSON object.")
+    click_id = str(data.get("click_id", "")).strip()[:128]
+    partner = str(data.get("partner", "")).strip()[:120]
+    event_type = str(data.get("event", "conversion")).strip()[:80] or "conversion"
+    event_id = str(data.get("event_id", "")).strip()[:160]
+    currency = str(data.get("currency", "EUR")).strip().upper()[:8] or "EUR"
+    try:
+        amount = float(data.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+    if not click_id or not partner or not event_id:
+        raise web.HTTPBadRequest(text="click_id, partner and event_id are required.")
+    if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+    with closing(db()) as con:
+        known_click = con.execute("SELECT 1 FROM clicks WHERE click_id=?", (click_id,)).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown click_id.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, partner, event_type, event_id, amount, currency,
+                 json.dumps(data, ensure_ascii=False)[:4000])
+            )
             con.commit()
-    if not row or not row[0].startswith(("https://", "http://")):
-        raise web.HTTPNotFound()
-    raise web.HTTPFound(row[0])
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
 
 
 async def terms_page(request):
@@ -2779,6 +3053,7 @@ async def main():
     app.router.add_get("/go/dual/{offer_id}/{kind}", go_dual_offer)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
     app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
+    app.router.add_post("/postback", partner_postback)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)
