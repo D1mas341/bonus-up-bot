@@ -93,6 +93,43 @@ def webapp_access_denied(request):
 
 
 
+def make_tracking_token(user_id: int, ttl_seconds: int = 1800) -> str:
+    """Create a short-lived signed token to associate a Mini App click with its Telegram user."""
+    expires = int(time.time()) + ttl_seconds
+    payload = f"{int(user_id)}.{expires}"
+    key = hashlib.sha256(TOKEN.encode()).digest()
+    signature = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{signature}"
+
+
+def tracking_user_id(request):
+    """Return a Telegram user ID only when the click token signature and expiry are valid."""
+    token = request.query.get("track", "")
+    try:
+        user_text, expires_text, signature = token.split(".", 2)
+        user_id, expires = int(user_text), int(expires_text)
+        if user_id <= 0 or expires < int(time.time()) or expires > int(time.time()) + 1800:
+            return None
+        payload = f"{user_id}.{expires}"
+        key = hashlib.sha256(TOKEN.encode()).digest()
+        expected = hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
+        return user_id if hmac.compare_digest(expected, signature) else None
+    except (ValueError, TypeError):
+        return None
+
+
+async def api_tracking_token(request):
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    user_id = validate_webapp_init_data(init_data)
+    if not user_id:
+        return web.json_response({"error": "telegram_auth_required"}, status=401)
+    if is_blocked(user_id):
+        return web.json_response({"error": "access_blocked"}, status=403)
+    return web.json_response({"token": make_tracking_token(user_id)},
+                             headers={"Cache-Control": "no-store"})
+
+
+
 
 def parse_callback_id(data: str, position: int = -1, *, from_right: bool = False) -> int:
     """Return a positive numeric callback ID, or 0 for malformed/stale callback data."""
@@ -2682,7 +2719,9 @@ const cp=document.getElementById("modalCopy");if(cp)cp.onclick=()=>copyPromo(x.p
 function closeModal(){document.getElementById("modalBackdrop").classList.remove("open");document.body.style.overflow="";selectedId=null}
 document.getElementById("modalBackdrop").addEventListener("click",e=>{if(e.target.id==="modalBackdrop")closeModal()});document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
 async function copyPromo(v){try{if(navigator.clipboard&&navigator.clipboard.writeText)await navigator.clipboard.writeText(v);else{const el=document.createElement("textarea");el.value=v;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove()}if(tg&&tg.showPopup)tg.showPopup({title:t("copiedTitle"),message:t("copied"),buttons:[{type:"ok"}]})}catch(e){if(tg&&tg.showAlert)tg.showAlert(t("copyFailed")+v)}}
-async function load(){try{const r=await fetch("/api/offers",{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});all=await r.json();renderBanners(await fetchBanners("casino"));render("casino")}catch(e){document.getElementById("offers").innerHTML='<div class="empty">Не удалось загрузить предложения.</div>'}}
+let trackingToken="";
+document.addEventListener("click",function(e){const a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a||!trackingToken)return;try{const u=new URL(a.href,location.href);if(u.origin===location.origin&&u.pathname.startsWith("/go/")&&!u.searchParams.has("track")){u.searchParams.set("track",trackingToken);a.href=u.href}}catch(_e){}},true);
+async function load(){try{const tokenResponse=await fetch("/api/tracking-token",{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});if(tokenResponse.ok){const tokenData=await tokenResponse.json();trackingToken=tokenData.token||""}const r=await fetch("/api/offers",{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});all=await r.json();renderBanners(await fetchBanners("casino"));render("casino")}catch(e){document.getElementById("offers").innerHTML='<div class="empty">Не удалось загрузить предложения.</div>'}}
 async function fetchBanners(section){try{const r=await fetch("/api/banners?section="+encodeURIComponent(section),{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});return r.ok?await r.json():[]}catch(e){return []}}
 let bannerTimer=null;
 function renderBanners(items){
@@ -2803,7 +2842,7 @@ async def go_offer(request):
     with closing(db()) as con:
         row = con.execute("SELECT url,name FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
         if row and is_partner_url(row[0]):
-            click_id = log_click(con, offer_id=offer_id, source=source,
+            click_id = log_click(con, user_id=tracking_user_id(request), offer_id=offer_id, source=source,
                                  click_type="offer", partner=row[1], target_url=row[0],
                                  utm_source=utm_source, utm_campaign=utm_campaign)
             con.commit()
@@ -2833,7 +2872,7 @@ async def go_dual_offer(request):
         target = row[0] if kind == "mini" else row[1]
         if not is_partner_url(target):
             raise web.HTTPNotFound(text="Ссылка для этого направления не настроена.")
-        click_id = log_click(con, offer_id=offer_id, source=source,
+        click_id = log_click(con, user_id=tracking_user_id(request), offer_id=offer_id, source=source,
                              click_type=f"offer_{kind}", partner=row[3],
                              target_url=target, utm_source=utm_source,
                              utm_campaign=utm_campaign)
@@ -2854,7 +2893,7 @@ async def go_banner(request):
         if not row or not is_partner_url(row[1]):
             raise web.HTTPNotFound()
         target = row[1]
-        click_id = log_click(con, source=source, click_type="banner",
+        click_id = log_click(con, user_id=tracking_user_id(request), source=source, click_type="banner",
                              partner=row[0], banner_id=banner_id, target_url=target,
                              utm_source=utm_source, utm_campaign=utm_campaign)
         con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
@@ -2876,7 +2915,7 @@ async def go_campaign(request):
         if not row or not is_partner_url(row[1]):
             raise web.HTTPNotFound()
         target = row[1]
-        click_id = log_click(con, source=source, click_type="campaign",
+        click_id = log_click(con, user_id=tracking_user_id(request), source=source, click_type="campaign",
                              partner=row[0], campaign_id=campaign_id, target_url=target,
                              utm_source=utm_source, utm_campaign=utm_campaign)
         con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
@@ -3056,6 +3095,7 @@ async def main():
     app.router.add_get("/app", mini_app)
     app.router.add_get("/api/offers", api_offers)
     app.router.add_get("/api/banners", api_banners)
+    app.router.add_get("/api/tracking-token", api_tracking_token)
     app.router.add_get("/go/{offer_id}", go_offer)
     app.router.add_get("/go/dual/{offer_id}/{kind}", go_dual_offer)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
