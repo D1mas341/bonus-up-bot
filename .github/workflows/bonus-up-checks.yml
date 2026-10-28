@@ -1,6 +1,13 @@
 name: BONUS UP branch checks
 
 on:
+  push:
+    branches: [feature/analytics-click-tracking, fix/postback-partner-match]
+    paths:
+      - "bot.py"
+      - "requirements.txt"
+      - "tests/**"
+      - ".github/workflows/bonus-up-checks.yml"
   pull_request:
     branches: [main, feature/analytics-click-tracking]
     paths:
