@@ -51,6 +51,56 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.close()
 
+
+    async def test_migration_preserves_legacy_offer_and_click_records(self):
+        # Rebuild a disposable SQLite file using the legacy schema from main.
+        with bot.db() as con:
+            con.execute("DROP TABLE IF EXISTS clicks")
+            con.execute("DROP TABLE IF EXISTS offers")
+            con.execute("""
+                CREATE TABLE offers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    bonus TEXT DEFAULT '',
+                    url TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    position INTEGER DEFAULT 0,
+                    geo TEXT DEFAULT ''
+                )
+            """)
+            con.execute("""
+                CREATE TABLE clicks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    offer_id INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            con.execute(
+                "INSERT INTO offers(id,category,name,description,bonus,url,enabled,position,geo) VALUES(41,'casino','Legacy partner','existing description','existing bonus','https://partner.example/keep',1,7,'RU')"
+            )
+            con.execute("INSERT INTO clicks(id,user_id,offer_id) VALUES(73,12345,41)")
+            con.commit()
+
+        bot.init_db()
+
+        with bot.db() as con:
+            offer = con.execute(
+                "SELECT id,name,description,bonus,url,enabled,position,geo,mini_app_url,site_url FROM offers WHERE id=41"
+            ).fetchone()
+            click = con.execute(
+                "SELECT id,user_id,offer_id,click_id,source,utm_source FROM clicks WHERE id=73"
+            ).fetchone()
+            offer_columns = {r[1] for r in con.execute("PRAGMA table_info(offers)")}
+            click_columns = {r[1] for r in con.execute("PRAGMA table_info(clicks)")}
+        self.assertEqual(tuple(offer[:8]), (41,"Legacy partner","existing description","existing bonus","https://partner.example/keep",1,7,"RU"))
+        self.assertEqual(tuple(click[:3]), (73,12345,41))
+        self.assertIsNone(click["click_id"])
+        self.assertTrue({"promo_code","logo_url","hidden","mini_app_url","site_url"} <= offer_columns)
+        self.assertTrue({"click_id","source","click_type","partner","banner_id","campaign_id","target_url","utm_source","utm_campaign"} <= click_columns)
+
     async def test_offer_redirect_logs_click_and_passes_click_id(self):
         response = await self.client.get("/go/1?utm_source=ci&utm_campaign=smoke", allow_redirects=False)
         self.assertEqual(response.status, 302)
