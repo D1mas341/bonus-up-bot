@@ -92,7 +92,34 @@ def webapp_access_denied(request):
 
 
 def db():
-    return sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout=30000")
+    return con
+
+
+def log_click(con, *, user_id=None, offer_id=None, source="", click_type="offer",
+              partner="", banner_id=None, campaign_id=None, target_url="",
+              utm_source="", utm_campaign=""):
+    """Persist one click while keeping old click totals and records compatible."""
+    click_id = uuid.uuid4().hex
+    con.execute(
+        """INSERT INTO clicks
+           (user_id,offer_id,click_id,source,click_type,partner,banner_id,campaign_id,
+            target_url,utm_source,utm_campaign)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (user_id, offer_id, click_id, source or "direct", click_type, partner or "",
+         banner_id, campaign_id, target_url or "", utm_source or "", utm_campaign or "")
+    )
+    return click_id
+
+
+def request_attribution(request):
+    source = (request.query.get("source") or request.query.get("ref") or
+              request.query.get("utm_source") or "direct")[:120]
+    utm_source = (request.query.get("utm_source") or "")[:120]
+    utm_campaign = (request.query.get("utm_campaign") or "")[:160]
+    return source, utm_source, utm_campaign
 
 
 def init_db():
@@ -134,6 +161,38 @@ def init_db():
             user_id INTEGER,
             offer_id INTEGER,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        # Additive click migrations preserve all historical rows and counters.
+        click_cols = [r[1] for r in con.execute("PRAGMA table_info(clicks)").fetchall()]
+        for col, definition in [
+            ("click_id", "TEXT"),
+            ("source", "TEXT DEFAULT ''"),
+            ("click_type", "TEXT DEFAULT 'offer'"),
+            ("partner", "TEXT DEFAULT ''"),
+            ("banner_id", "INTEGER"),
+            ("campaign_id", "INTEGER"),
+            ("target_url", "TEXT DEFAULT ''"),
+            ("utm_source", "TEXT DEFAULT ''"),
+            ("utm_campaign", "TEXT DEFAULT ''"),
+        ]:
+            if col not in click_cols:
+                con.execute(f"ALTER TABLE clicks ADD COLUMN {col} {definition}")
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clicks_click_id ON clicks(click_id) WHERE click_id IS NOT NULL")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_clicks_created_at ON clicks(created_at)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_clicks_source ON clicks(source)")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS conversion_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            click_id TEXT NOT NULL,
+            partner TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT 'conversion',
+            event_id TEXT DEFAULT '',
+            amount REAL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'EUR',
+            payload TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(partner, event_id)
         )
         """)
         # Additive migrations preserve existing partner links and offers.
@@ -604,10 +663,9 @@ async def offer(call: CallbackQuery):
         if row:
             # This records an offer-card opening. Telegram does not tell the bot
             # when the external URL button itself is clicked.
-            con.execute(
-                "INSERT INTO clicks(user_id,offer_id) VALUES(?,?)",
-                (call.from_user.id, offer_id)
-            )
+            log_click(con, user_id=call.from_user.id, offer_id=offer_id,
+                      source="telegram_bot", click_type="offer_card",
+                      partner=row[1], target_url=row[4])
             con.commit()
     if not row:
         await call.answer("Предложение больше недоступно.", show_alert=True)
@@ -1316,22 +1374,45 @@ async def adm_analytics(call: CallbackQuery):
         total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         today_users = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
         offer_clicks = con.execute("SELECT COUNT(*) FROM clicks").fetchone()[0]
+        unique_users_clicked = con.execute("SELECT COUNT(DISTINCT user_id) FROM clicks WHERE user_id IS NOT NULL").fetchone()[0]
+        source_rows = con.execute("""
+            SELECT COALESCE(NULLIF(source,''),'direct'),COUNT(*)
+            FROM clicks GROUP BY COALESCE(NULLIF(source,''),'direct')
+            ORDER BY COUNT(*) DESC LIMIT 8
+        """).fetchall()
         offer_rows = con.execute("""
-            SELECT o.name, COUNT(c.id) AS clicks
+            SELECT o.name, COUNT(c.id) AS clicks,
+                   COUNT(DISTINCT c.user_id) AS known_unique_users
             FROM offers o LEFT JOIN clicks c ON c.offer_id=o.id
             GROUP BY o.id ORDER BY clicks DESC, o.position, o.id
         """).fetchall()
         campaign_rows = con.execute("SELECT title,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
         revenue_rows = con.execute("SELECT currency,COALESCE(SUM(amount),0) FROM revenue_entries GROUP BY currency ORDER BY currency").fetchall()
         partner_rows = con.execute("SELECT partner,currency,COALESCE(SUM(amount),0),COUNT(*) FROM revenue_entries GROUP BY partner,currency ORDER BY partner,currency").fetchall()
+        conversion_rows = con.execute("""
+            SELECT partner,event_type,COUNT(*),COALESCE(SUM(amount),0),currency
+            FROM conversion_events GROUP BY partner,event_type,currency
+            ORDER BY partner,event_type,currency
+        """).fetchall()
     lines = [
         "📈 АНАЛИТИКА И ДОХОД", "",
         f"👥 Всего пользователей: {total_users}",
         f"🆕 Новых сегодня (UTC): {today_users}",
-        f"🔗 Переходов по ссылкам офферов: {offer_clicks}", "",
+        f"🔗 Всего кликов: {offer_clicks}",
+        f"👤 Пользователей с отслеживаемыми кликами: {unique_users_clicked}", "",
         "🎁 ПЕРЕХОДЫ ПО ОФФЕРАМ:"
     ]
-    lines.extend([f"• {name}: {count}" for name,count in offer_rows] or ["Пока нет данных по офферам."])
+    lines.extend([
+        f"• {row[0]}: {row[1]} кликов; известных пользователей: {row[2]}"
+        for row in offer_rows
+    ] or ["Пока нет данных по офферам."])
+    lines += ["", "🧭 ИСТОЧНИКИ ПЕРЕХОДОВ:"]
+    lines.extend([f"• {source}: {count}" for source,count in source_rows] or ["Источники пока не отмечены."])
+    lines += ["", "📥 КОНВЕРСИИ ОТ ПАРТНЁРОВ:"]
+    lines.extend([
+        f"• {partner} — {event_type}: {count}; сумма {amount:.2f} {currency}"
+        for partner,event_type,count,amount,currency in conversion_rows
+    ] or ["Пока нет подтверждённых postback-конверсий."])
     lines += ["", "📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ:"]
     lines.extend([f"• {title or 'Без названия'}: отправок {sent}, нажатий {clicks}" for title,sent,clicks in campaign_rows] or ["Публикаций пока нет."])
     lines += ["", "💰 ДОХОД, ЗАНЕСЁННЫЙ ВРУЧНУЮ:"]
@@ -2593,14 +2674,20 @@ async def go_offer(request):
         offer_id = int(request.match_info["offer_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request)
     with closing(db()) as con:
-        row = con.execute("SELECT url FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
+        row = con.execute("SELECT url,name FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
         if row and is_partner_url(row[0]):
-            con.execute("INSERT INTO clicks(user_id,offer_id) VALUES(NULL,?)", (offer_id,))
+            click_id = log_click(con, offer_id=offer_id, source=source,
+                                 click_type="offer", partner=row[1], target_url=row[0],
+                                 utm_source=utm_source, utm_campaign=utm_campaign)
             con.commit()
     if not row or not is_partner_url(row[0]):
         raise web.HTTPNotFound(text="Партнёрская ссылка ещё не подключена.")
-    raise web.HTTPFound(row[0])
+    target = row[0]
+    if "{click_id}" in target:
+        target = target.replace("{click_id}", click_id)
+    raise web.HTTPFound(target)
 
 async def go_dual_offer(request):
     try:
@@ -2610,9 +2697,10 @@ async def go_dual_offer(request):
         raise web.HTTPNotFound()
     if kind not in {"mini", "site"}:
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request)
     with closing(db()) as con:
         row = con.execute(
-            "SELECT mini_app_url,site_url,enabled FROM offers WHERE id=?",
+            "SELECT mini_app_url,site_url,enabled,name FROM offers WHERE id=?",
             (offer_id,)
         ).fetchone()
         if not row or not row[2]:
@@ -2620,10 +2708,12 @@ async def go_dual_offer(request):
         target = row[0] if kind == "mini" else row[1]
         if not is_partner_url(target):
             raise web.HTTPNotFound(text="Ссылка для этого направления не настроена.")
-        click_id = uuid.uuid4().hex
-        con.execute("INSERT INTO clicks(user_id,offer_id) VALUES(NULL,?)", (offer_id,))
+        click_id = log_click(con, offer_id=offer_id, source=source,
+                             click_type=f"offer_{kind}", partner=row[3],
+                             target_url=target, utm_source=utm_source,
+                             utm_campaign=utm_campaign)
         con.commit()
-    if kind == "site" and "{click_id}" in target:
+    if "{click_id}" in target:
         target = target.replace("{click_id}", click_id)
     raise web.HTTPFound(target)
 
@@ -2633,30 +2723,87 @@ async def go_banner(request):
         banner_id = int(request.match_info["banner_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request)
     with closing(db()) as con:
-        row = con.execute("SELECT url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
+        row = con.execute("SELECT title,url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
         if row:
+            click_id = log_click(con, source=source, click_type="banner",
+                                 partner=row[0], banner_id=banner_id, target_url=row[1],
+                                 utm_source=utm_source, utm_campaign=utm_campaign)
             con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
             con.commit()
-    if not row or not row[0].startswith(("https://", "http://")):
+    if not row or not row[1].startswith(("https://", "http://")):
         raise web.HTTPNotFound()
-    raise web.HTTPFound(row[0])
+    target = row[1]
+    if "{click_id}" in target:
+        target = target.replace("{click_id}", click_id)
+    raise web.HTTPFound(target)
 
 async def go_campaign(request):
     try:
         campaign_id = int(request.match_info["campaign_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
+    source, utm_source, utm_campaign = request_attribution(request)
     with closing(db()) as con:
         # Existing sent cards should keep their partner link even if the admin
         # disables future sends; deleting the campaign removes this route.
-        row = con.execute("SELECT button_url FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
-        if row and row[0].startswith(("https://", "http://")):
+        row = con.execute("SELECT title,button_url FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+        if row and row[1].startswith(("https://", "http://")):
+            click_id = log_click(con, source=source, click_type="campaign",
+                                 partner=row[0], campaign_id=campaign_id, target_url=row[1],
+                                 utm_source=utm_source, utm_campaign=utm_campaign)
             con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
             con.commit()
-    if not row or not row[0].startswith(("https://", "http://")):
+    if not row or not row[1].startswith(("https://", "http://")):
         raise web.HTTPNotFound()
-    raise web.HTTPFound(row[0])
+    target = row[1]
+    if "{click_id}" in target:
+        target = target.replace("{click_id}", click_id)
+    raise web.HTTPFound(target)
+
+
+async def partner_postback(request):
+    """Optional authenticated affiliate postback endpoint; disabled until secret is configured."""
+    expected_secret = os.getenv("POSTBACK_SECRET", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="Partner postbacks are not configured.")
+    supplied_secret = request.headers.get("X-Postback-Secret", "")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+    try:
+        data = await request.json()
+    except Exception:
+        data = dict(request.query)
+    click_id = str(data.get("click_id", "")).strip()[:128]
+    partner = str(data.get("partner", "")).strip()[:120]
+    event_type = str(data.get("event", "conversion")).strip()[:80] or "conversion"
+    event_id = str(data.get("event_id", "")).strip()[:160]
+    currency = str(data.get("currency", "EUR")).strip().upper()[:8] or "EUR"
+    try:
+        amount = float(data.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+    if not click_id or not partner or not event_id:
+        raise web.HTTPBadRequest(text="click_id, partner and event_id are required.")
+    if not (-1e9 < amount < 1e9):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+    with closing(db()) as con:
+        known_click = con.execute("SELECT 1 FROM clicks WHERE click_id=?", (click_id,)).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown click_id.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, partner, event_type, event_id, amount, currency,
+                 json.dumps(data, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
 
 
 async def terms_page(request):
@@ -2779,6 +2926,7 @@ async def main():
     app.router.add_get("/go/dual/{offer_id}/{kind}", go_dual_offer)
     app.router.add_get("/go/banner/{banner_id}", go_banner)
     app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
+    app.router.add_post("/postback", partner_postback)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)
