@@ -260,6 +260,30 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
             ).fetchone()
         self.assertEqual(tuple(row), ("register", f"{click_id}:register", "USD"))
 
+    async def test_tonplay_documented_click_slug_action_and_tx_id_macros(self):
+        with bot.db() as con:
+            click_id = bot.log_click(
+                con, offer_id=1, source="ci", partner="TonPlay",
+                target_url="https://affiliate.test/landing"
+            )
+            con.commit()
+        params = {
+            "key": os.environ["TONPLAY_POSTBACK_SECRET"],
+            "click_slug": click_id,
+            "action": "first_deposit",
+            "tx_id": "tonplay-tx-001",
+            "amount_usd": "12.50",
+        }
+        response = await self.client.get("/postback/tonplay", params=params)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.json(), {"ok": True, "recorded": True})
+        with bot.db() as con:
+            row = con.execute(
+                "SELECT event_type,event_id,amount,currency,click_id FROM conversion_events WHERE event_id=?",
+                ("tonplay-tx-001",),
+            ).fetchone()
+        self.assertEqual(tuple(row), ("first_deposit", "tonplay-tx-001", 12.5, "USD", click_id))
+
     async def test_tonplay_get_postback_rejects_wrong_secret(self):
         response = await self.client.get(
             "/postback/tonplay",

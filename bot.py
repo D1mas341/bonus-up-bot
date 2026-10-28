@@ -2988,16 +2988,18 @@ async def tonplay_postback(request):
     if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
         raise web.HTTPUnauthorized(text="Invalid postback credentials.")
 
-    click_id = str(request.query.get("click_id", "")).strip()[:128]
-    # TonPlay's registration callback may not have a transaction ID. Use a
-    # stable click+action key for that one-time event; deposits must carry tx_id
-    # so multiple deposits from one click are not accidentally collapsed.
-    event_type = str(request.query.get("event") or request.query.get("status") or "conversion").strip()[:80] or "conversion"
-    event_id = str(request.query.get("event_id") or request.query.get("transaction_id") or "").strip()[:160]
-    if not event_id and click_id and event_type.lower() in {"register", "registration"}:
+    # TonPlay documents {click_slug}, {action}, {amount_usd}, {tx_id}.
+    # Keep click_id/transaction_id aliases for backward compatibility.
+    click_id = str(request.query.get("click_id") or request.query.get("click_slug") or "").strip()[:128]
+    event_type = str(request.query.get("event") or request.query.get("action") or request.query.get("status") or "conversion").strip()[:80] or "conversion"
+    event_id = str(request.query.get("event_id") or request.query.get("transaction_id") or request.query.get("tx_id") or "").strip()[:160]
+    action = event_type.lower()
+    # TonPlay registration has no transaction ID; deduplicate its one-time event.
+    if not event_id and click_id and action in {"register", "registration"}:
         event_id = f"{click_id}:register"
+    # Deposits/withdrawals carry tx_id and must retain distinct transactions.
     currency = str(request.query.get("currency", "USD")).strip().upper()[:8] or "USD"
-    amount_raw = request.query.get("amount", request.query.get("payout", request.query.get("amount_usd", "0")))
+    amount_raw = request.query.get("amount", request.query.get("payout", request.query.get("amount_usd", request.query.get("rs", request.query.get("ngr", "0")))))
     try:
         amount = float(amount_raw or 0)
     except (TypeError, ValueError):
