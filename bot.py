@@ -1479,9 +1479,9 @@ async def adm_analytics(call: CallbackQuery):
     params = (offset,) if offset else ()
     with closing(db()) as con:
         total_users = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        today_users = con.execute("SELECT COUNT(*) FROM users WHERE date(created_at)=date('now')").fetchone()[0]
-        click_count = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'" + date_filter, params).fetchone()[0]
-        unique_users = con.execute("SELECT COUNT(DISTINCT user_id) FROM clicks WHERE user_id IS NOT NULL AND click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'" + date_filter, params).fetchone()[0]
+        period_users = con.execute("SELECT COUNT(*) FROM users WHERE 1=1" + date_filter, params).fetchone()[0]
+        click_count = con.execute("SELECT COUNT(*) FROM clicks WHERE click_id IS NOT NULL AND TRIM(click_id)!='' AND COALESCE(click_type,'offer')!='offer_card'" + date_filter, params).fetchone()[0]
+        unique_users = con.execute("SELECT COUNT(DISTINCT user_id) FROM clicks WHERE user_id IS NOT NULL AND click_id IS NOT NULL AND TRIM(click_id)!='' AND COALESCE(click_type,'offer')!='offer_card'" + date_filter, params).fetchone()[0]
         card_opens = con.execute("SELECT COUNT(*) FROM clicks WHERE click_type='offer_card'" + date_filter, params).fetchone()[0]
         offer_rows = con.execute("""
             SELECT o.name,
@@ -1508,13 +1508,13 @@ async def adm_analytics(call: CallbackQuery):
         campaign_rows = con.execute("SELECT title,sent_count,click_count FROM campaigns ORDER BY position,id").fetchall()
         source_rows = con.execute("""
             SELECT COALESCE(NULLIF(source,''),'direct'),COUNT(*) FROM clicks
-            WHERE click_id IS NOT NULL AND COALESCE(click_type,'offer')!='offer_card'""" + date_filter + """
+            WHERE click_id IS NOT NULL AND TRIM(click_id)!='' AND COALESCE(click_type,'offer')!='offer_card'""" + date_filter + """
             GROUP BY COALESCE(NULLIF(source,''),'direct') ORDER BY COUNT(*) DESC LIMIT 8
         """, params).fetchall()
     lines = [
         f"📈 АНАЛИТИКА ПАРТНЁРОК — {period_label}", "",
-        f"👥 Всего пользователей: {total_users}",
-        f"🆕 Новых сегодня (UTC): {today_users}",
+        f"👥 Всего пользователей в базе: {total_users}",
+        f"🆕 Новых пользователей за период: {period_users}",
         f"🔗 Переходов по партнёрским ссылкам: {click_count}",
         f"👤 Пользователей с отслеживаемыми переходами: {unique_users}",
         f"👁 Открытий карточек офферов: {card_opens}", "",
