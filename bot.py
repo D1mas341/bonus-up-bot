@@ -2979,6 +2979,50 @@ async def partner_postback(request):
     return web.json_response({"ok": True, "recorded": True})
 
 
+async def tonplay_postback(request):
+    """GET-compatible TonPlay callback; configure only after confirming its macro names."""
+    expected_secret = os.getenv("TONPLAY_POSTBACK_SECRET", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="TonPlay postbacks are not configured.")
+    supplied_secret = request.query.get("key", "")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+
+    click_id = str(request.query.get("click_id", "")).strip()[:128]
+    event_id = str(request.query.get("event_id") or request.query.get("transaction_id") or "").strip()[:160]
+    event_type = str(request.query.get("event") or request.query.get("status") or "conversion").strip()[:80] or "conversion"
+    currency = str(request.query.get("currency", "EUR")).strip().upper()[:8] or "EUR"
+    amount_raw = request.query.get("amount", request.query.get("payout", "0"))
+    try:
+        amount = float(amount_raw or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+    if not click_id or not event_id:
+        raise web.HTTPBadRequest(text="click_id and event_id/transaction_id are required.")
+    if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+
+    payload = {k: v for k, v in request.query.items() if k != "key"}
+    with closing(db()) as con:
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown click_id.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "TonPlay", event_type, event_id, amount, currency,
+                 json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
+
+
 async def terms_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
 
@@ -3101,6 +3145,7 @@ async def main():
     app.router.add_get("/go/banner/{banner_id}", go_banner)
     app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
     app.router.add_post("/postback", partner_postback)
+    app.router.add_get("/postback/tonplay", tonplay_postback)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)

@@ -22,6 +22,7 @@ python bot.py
 - `DB_PATH` — путь к SQLite-файлу; по умолчанию `bonus_up.db`.
 - `WEBAPP_URL` — публичный адрес Mini App, если он задаётся отдельно.
 - `POSTBACK_SECRET` — необязательный секрет для входящих партнёрских postback-запросов. Пока он не задан, `POST /postback` отключён.
+- `TONPLAY_POSTBACK_SECRET` — отдельный секрет для GET callback TonPlay. Пока он не задан, `GET /postback/tonplay` отключён.
 - `WELCOME_VIDEO_PATH` — необязательный путь к локальному видео приветствия.
 
 Не публикуйте токен бота, postback-секрет или другие секреты в GitHub и не отправляйте их в чат.
@@ -35,6 +36,7 @@ python bot.py
 - Атрибуция кликов: уникальный `click_id`, источник и UTM-поля.
 - Административная аналитика кликов и событий конверсии.
 - Защищённый необязательный endpoint `POST /postback`.
+- Защищённый необязательный endpoint `GET /postback/tonplay`.
 - Служебные маршруты: `/health`, `/terms`, `/privacy`.
 
 ## Как работает click tracking
@@ -43,7 +45,21 @@ python bot.py
 
 Важно: партнёрская сеть должна поддерживать передачу sub-ID/click ID и возвращать тот же ID в postback. Не добавляйте произвольные параметры в партнёрские ссылки без проверки документации конкретной сети. Реальная передача click ID и получение конверсий не считаются проверенными, пока это не протестировано с кабинетом соответствующего партнёра.
 
-### Формат postback
+### TonPlay GET postback
+
+Endpoint `GET /postback/tonplay` принимает `key`, `click_id`, `transaction_id`, `event`, `amount` и `currency`. Он отключён, пока в Railway не задана отдельная переменная `TONPLAY_POSTBACK_SECRET`.
+
+Согласно документации TonPlay, события передаются через `{action}` (значения `register`, `first_deposit`, `deposit` и другие), уникальный ID транзакции — через `{tx_id}`, сумма в USD — через `{amount_usd}`. Если партнёрская ссылка BONUS UP передаёт собственный ID как параметр `click_id={click_id}`, callback должен вернуть это значение через макрос `{click_id}`.
+
+Шаблон URL для поля Postback в TonPlay (использовать только после развёртывания endpoint и настройки секрета в Railway):
+
+```text
+https://bonus-up-bot-production.up.railway.app/postback/tonplay?key=YOUR_TONPLAY_SECRET&click_id={click_id}&transaction_id={tx_id}&event={action}&amount={amount_usd}&currency=USD
+```
+
+В партнёрской ссылке TonPlay должен сохраняться плейсхолдер BONUS UP `{click_id}`, который сервер заменяет на ID клика перед перенаправлением. Не меняйте имя этого параметра без согласованного изменения callback. Перед включением убедитесь, что в форме TonPlay выбран нужный тип событий и кабинет допускает GET callback. Секрет передаётся в query string и может попадать в журналы запросов; используйте отдельный случайный секрет, не токен бота и не `POSTBACK_SECRET`.
+
+### Формат стандартного postback
 
 Запрос отправляется методом POST на `/postback`, с заголовком `X-Postback-Secret: <ваш секрет>` и JSON-телом:
 

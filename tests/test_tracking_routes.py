@@ -10,6 +10,7 @@ _tmp = tempfile.TemporaryDirectory()
 os.environ["BOT_TOKEN"] = "ci-test-token"
 os.environ["DB_PATH"] = os.path.join(_tmp.name, "tracking-test.db")
 os.environ["POSTBACK_SECRET"] = "ci-postback-secret"
+os.environ["TONPLAY_POSTBACK_SECRET"] = "ci-tonplay-secret"
 
 import bot  # noqa: E402
 
@@ -46,6 +47,7 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_get("/go/banner/{banner_id}", bot.go_banner)
         app.router.add_get("/go/campaign/{campaign_id}", bot.go_campaign)
         app.router.add_post("/postback", bot.partner_postback)
+        app.router.add_get("/postback/tonplay", bot.tonplay_postback)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
 
@@ -202,6 +204,41 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
                 ("ci-network", "event-001"),
             ).fetchone()[0]
         self.assertEqual(count, 1)
+
+    async def test_tonplay_get_postback_records_and_deduplicates_conversion(self):
+        with bot.db() as con:
+            click_id = bot.log_click(
+                con, offer_id=1, source="ci", partner="TonPlay",
+                target_url="https://affiliate.test/landing"
+            )
+            con.commit()
+        params = {
+            "key": os.environ["TONPLAY_POSTBACK_SECRET"],
+            "click_id": click_id,
+            "transaction_id": "tonplay-event-001",
+            "event": "registration",
+            "amount": "0",
+            "currency": "EUR",
+        }
+        first = await self.client.get("/postback/tonplay", params=params)
+        self.assertEqual(first.status, 200)
+        self.assertEqual(await first.json(), {"ok": True, "recorded": True})
+        duplicate = await self.client.get("/postback/tonplay", params=params)
+        self.assertEqual(duplicate.status, 200)
+        self.assertEqual(await duplicate.json(), {"ok": True, "duplicate": True})
+        with bot.db() as con:
+            row = con.execute(
+                "SELECT partner,event_type,event_id,click_id FROM conversion_events WHERE event_id=?",
+                ("tonplay-event-001",),
+            ).fetchone()
+        self.assertEqual(tuple(row), ("TonPlay", "registration", "tonplay-event-001", click_id))
+
+    async def test_tonplay_get_postback_rejects_wrong_secret(self):
+        response = await self.client.get(
+            "/postback/tonplay",
+            params={"key": "wrong", "click_id": "fake", "transaction_id": "event-x"},
+        )
+        self.assertEqual(response.status, 401)
 
     async def test_postback_rejects_wrong_secret(self):
         response = await self.client.post(
