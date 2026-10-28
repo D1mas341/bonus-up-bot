@@ -114,9 +114,9 @@ def log_click(con, *, user_id=None, offer_id=None, source="", click_type="offer"
     return click_id
 
 
-def request_attribution(request):
+def request_attribution(request, default_source="direct"):
     source = (request.query.get("source") or request.query.get("ref") or
-              request.query.get("utm_source") or "direct")[:120]
+              request.query.get("utm_source") or default_source)[:120]
     utm_source = (request.query.get("utm_source") or "")[:120]
     utm_campaign = (request.query.get("utm_campaign") or "")[:160]
     return source, utm_source, utm_campaign
@@ -680,7 +680,9 @@ async def offer(call: CallbackQuery):
     text += "\n18+. Условия и доступность зависят от страны и правил оператора."
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="🎁 ПОЛУЧИТЬ ПРЕДЛОЖЕНИЕ", url=url)
+    base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+    tracked_url = f"{base_url}/go/{offer_id}" if base_url else url
+    kb.button(text="🎁 ПОЛУЧИТЬ ПРЕДЛОЖЕНИЕ", url=tracked_url)
     kb.button(text="⬅️ Назад", callback_data=f"back:{category}")
     kb.adjust(1)
     await call.message.edit_text(text, reply_markup=kb.as_markup())
@@ -2674,7 +2676,7 @@ async def go_offer(request):
         offer_id = int(request.match_info["offer_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
-    source, utm_source, utm_campaign = request_attribution(request)
+    source, utm_source, utm_campaign = request_attribution(request, "offer")
     with closing(db()) as con:
         row = con.execute("SELECT url,name FROM offers WHERE id=? AND enabled=1", (offer_id,)).fetchone()
         if row and is_partner_url(row[0]):
@@ -2697,7 +2699,7 @@ async def go_dual_offer(request):
         raise web.HTTPNotFound()
     if kind not in {"mini", "site"}:
         raise web.HTTPNotFound()
-    source, utm_source, utm_campaign = request_attribution(request)
+    source, utm_source, utm_campaign = request_attribution(request, "offer")
     with closing(db()) as con:
         row = con.execute(
             "SELECT mini_app_url,site_url,enabled,name FROM offers WHERE id=?",
@@ -2723,7 +2725,7 @@ async def go_banner(request):
         banner_id = int(request.match_info["banner_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
-    source, utm_source, utm_campaign = request_attribution(request)
+    source, utm_source, utm_campaign = request_attribution(request, "banner")
     with closing(db()) as con:
         row = con.execute("SELECT title,url FROM banners WHERE id=? AND enabled=1", (banner_id,)).fetchone()
         if row:
@@ -2744,7 +2746,7 @@ async def go_campaign(request):
         campaign_id = int(request.match_info["campaign_id"])
     except (TypeError, ValueError):
         raise web.HTTPNotFound()
-    source, utm_source, utm_campaign = request_attribution(request)
+    source, utm_source, utm_campaign = request_attribution(request, "campaign")
     with closing(db()) as con:
         # Existing sent cards should keep their partner link even if the admin
         # disables future sends; deleting the campaign removes this route.
