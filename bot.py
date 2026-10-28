@@ -2916,9 +2916,19 @@ async def partner_postback(request):
     if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
         raise web.HTTPBadRequest(text="Invalid amount.")
     with closing(db()) as con:
-        known_click = con.execute("SELECT 1 FROM clicks WHERE click_id=?", (click_id,)).fetchone()
+        known_click = con.execute(
+            "SELECT partner FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
         if not known_click:
             raise web.HTTPNotFound(text="Unknown click_id.")
+        # The tracking route stores the expected partner label alongside the
+        # click. A postback may only credit that same label, preventing a valid
+        # click ID from being attributed to a different partner.
+        expected_partner = (known_click["partner"] or "").strip()
+        if not expected_partner or not hmac.compare_digest(
+            expected_partner.casefold(), partner.casefold()
+        ):
+            raise web.HTTPForbidden(text="Partner does not match click_id.")
         try:
             con.execute(
                 """INSERT INTO conversion_events
