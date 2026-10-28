@@ -221,3 +221,4 @@ if __name__ == "__main__":
 
 # CI trigger: rerun branch checks after fixing the workflow base-branch filter.
 # CI push-trigger verification.
+# Trigger CI after workflow was added to the default branch.
