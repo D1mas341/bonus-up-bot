@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 import uuid
 from io import BytesIO
@@ -2798,10 +2799,14 @@ async def partner_postback(request):
     supplied_secret = request.headers.get("X-Postback-Secret", "")
     if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
         raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+    # Accept only a JSON object over POST. Do not silently treat query parameters
+    # as a postback payload: they are easier to leak into logs and browser history.
     try:
         data = await request.json()
-    except Exception:
-        data = dict(request.query)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        raise web.HTTPBadRequest(text="Expected a JSON object.")
+    if not isinstance(data, dict):
+        raise web.HTTPBadRequest(text="Expected a JSON object.")
     click_id = str(data.get("click_id", "")).strip()[:128]
     partner = str(data.get("partner", "")).strip()[:120]
     event_type = str(data.get("event", "conversion")).strip()[:80] or "conversion"
@@ -2813,7 +2818,7 @@ async def partner_postback(request):
         raise web.HTTPBadRequest(text="Invalid amount.")
     if not click_id or not partner or not event_id:
         raise web.HTTPBadRequest(text="click_id, partner and event_id are required.")
-    if not (-1e9 < amount < 1e9):
+    if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
         raise web.HTTPBadRequest(text="Invalid amount.")
     with closing(db()) as con:
         known_click = con.execute("SELECT 1 FROM clicks WHERE click_id=?", (click_id,)).fetchone()
