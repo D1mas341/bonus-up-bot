@@ -2927,8 +2927,7 @@ async def go_dual_offer(request):
                              target_url=target, utm_source=utm_source,
                              utm_campaign=utm_campaign)
         con.commit()
-    if "{click_id}" in target:
-        target = target.replace("{click_id}", click_id)
+    target = apply_tracking_macros(target, click_id, tracking_user_id(request))
     raise web.HTTPFound(target)
 
 
@@ -2948,8 +2947,7 @@ async def go_banner(request):
                              utm_source=utm_source, utm_campaign=utm_campaign)
         con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
         con.commit()
-    if "{click_id}" in target:
-        target = target.replace("{click_id}", click_id)
+    target = apply_tracking_macros(target, click_id, tracking_user_id(request))
     raise web.HTTPFound(target)
 
 async def go_campaign(request):
@@ -2970,8 +2968,7 @@ async def go_campaign(request):
                              utm_source=utm_source, utm_campaign=utm_campaign)
         con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
         con.commit()
-    if "{click_id}" in target:
-        target = target.replace("{click_id}", click_id)
+    target = apply_tracking_macros(target, click_id, tracking_user_id(request))
     raise web.HTTPFound(target)
 
 
