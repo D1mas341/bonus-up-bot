@@ -3204,6 +3204,67 @@ async def vodka_postback(request):
     return web.json_response({"ok": True, "recorded": True})
 
 
+async def norm_lacasino_postback(request):
+    """NormAffiliates callback for La Casino registration/deposit events."""
+    expected_secret = os.getenv("NORM_LACASINO_POSTBACK_SECRET", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="NormAffiliates La Casino postbacks are not configured.")
+    supplied_secret = request.query.get("key", "")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+
+    # The route fixes the event type; event_id identifies the event, not its type.
+    event_type = str(request.match_info.get("event_type", "")).strip().lower()
+    if event_type not in {"registration", "deposit"}:
+        raise web.HTTPBadRequest(text="Unsupported event type.")
+
+    q = request.query
+    # Use a dedicated source_id slot for BONUS UP's click ID. Do not use
+    # source_id itself as it may be the publisher's static UTM/source code.
+    click_id = str(q.get("source_id1") or q.get("source_id2") or
+                   q.get("source_id3") or q.get("source_id4") or
+                   q.get("source_id5") or q.get("click_id") or
+                   q.get("subid") or "").strip()[:128]
+    event_id = str(q.get("event_id") or "").strip()[:160]
+    if not click_id:
+        raise web.HTTPBadRequest(text="Missing BONUS UP click ID (source_id1).")
+    if not event_id and event_type == "registration":
+        event_id = f"{click_id}:registration"
+    if not event_id:
+        raise web.HTTPBadRequest(text="Missing unique event_id for deposit.")
+
+    currency = str(q.get("player_currency") or q.get("currency") or "EUR").strip().upper()[:8] or "EUR"
+    # NormAffiliates defines deposit_amount as the player's cumulative deposits
+    # up to the callback, not necessarily the amount of this individual deposit.
+    amount_raw = q.get("deposit_amount", "0") if event_type == "deposit" else "0"
+    try:
+        amount = float(amount_raw or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Invalid deposit_amount.")
+    if not math.isfinite(amount) or not (0 <= amount < 1e9):
+        raise web.HTTPBadRequest(text="Invalid deposit_amount.")
+
+    payload = {k: v for k, v in q.items() if k != "key"}
+    with closing(db()) as con:
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown click_id.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "NormAffiliates / La Casino", event_type, event_id,
+                 amount, currency, json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
+
+
 async def terms_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
 
@@ -3329,6 +3390,7 @@ async def main():
     app.router.add_get("/postback/tonplay", tonplay_postback)
     app.router.add_get("/postback/vavada", vavada_postback)
     app.router.add_get("/postback/vodka", vodka_postback)
+    app.router.add_get("/postback/norm/lacasino/{event_type}", norm_lacasino_postback)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)

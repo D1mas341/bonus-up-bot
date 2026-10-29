@@ -11,6 +11,7 @@ os.environ["BOT_TOKEN"] = "ci-test-token"
 os.environ["DB_PATH"] = os.path.join(_tmp.name, "tracking-test.db")
 os.environ["POSTBACK_SECRET"] = "ci-postback-secret"
 os.environ["TONPLAY_POSTBACK_SECRET"] = "ci-tonplay-secret"
+os.environ["NORM_LACASINO_POSTBACK_SECRET"] = "ci-norm-lacasino-secret"
 
 import bot  # noqa: E402
 
@@ -48,6 +49,7 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_get("/go/campaign/{campaign_id}", bot.go_campaign)
         app.router.add_post("/postback", bot.partner_postback)
         app.router.add_get("/postback/tonplay", bot.tonplay_postback)
+        app.router.add_get("/postback/norm/lacasino/{event_type}", bot.norm_lacasino_postback)
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
 
@@ -204,6 +206,44 @@ class TrackingRouteTests(unittest.IsolatedAsyncioTestCase):
                 ("ci-network", "event-001"),
             ).fetchone()[0]
         self.assertEqual(count, 1)
+
+    async def test_norm_lacasino_postback_records_registration_and_deposit(self):
+        with bot.db() as con:
+            click_id = bot.log_click(
+                con, offer_id=1, source="bonus-up", partner="La Casino",
+                target_url="https://affiliate.test/landing"
+            )
+            con.commit()
+
+        base = "/postback/norm/lacasino"
+        secret = os.environ["NORM_LACASINO_POSTBACK_SECRET"]
+        registration = await self.client.get(
+            f"{base}/registration?key={secret}&source_id1={click_id}&player_currency=EUR"
+        )
+        self.assertEqual(registration.status, 200)
+        self.assertEqual(await registration.json(), {"ok": True, "recorded": True})
+
+        deposit = await self.client.get(
+            f"{base}/deposit?key={secret}&source_id1={click_id}&event_id=dep-001&deposit_amount=75.50&player_currency=EUR"
+        )
+        self.assertEqual(deposit.status, 200)
+        self.assertEqual(await deposit.json(), {"ok": True, "recorded": True})
+
+        duplicate = await self.client.get(
+            f"{base}/deposit?key={secret}&source_id1={click_id}&event_id=dep-001&deposit_amount=75.50&player_currency=EUR"
+        )
+        self.assertEqual(duplicate.status, 200)
+        self.assertEqual(await duplicate.json(), {"ok": True, "duplicate": True})
+
+        with bot.db() as con:
+            rows = con.execute(
+                "SELECT event_type,event_id,amount,currency FROM conversion_events WHERE partner=? ORDER BY id",
+                ("NormAffiliates / La Casino",),
+            ).fetchall()
+        self.assertEqual([r["event_type"] for r in rows], ["registration", "deposit"])
+        self.assertEqual(rows[1]["event_id"], "dep-001")
+        self.assertEqual(rows[1]["amount"], 75.5)
+        self.assertEqual(rows[1]["currency"], "EUR")
 
     async def test_tonplay_get_postback_records_and_deduplicates_conversion(self):
         with bot.db() as con:

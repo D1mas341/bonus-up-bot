@@ -45,6 +45,21 @@ python bot.py
 
 Важно: партнёрская сеть должна поддерживать передачу sub-ID/click ID и возвращать тот же ID в postback. Не добавляйте произвольные параметры в партнёрские ссылки без проверки документации конкретной сети. Реальная передача click ID и получение конверсий не считаются проверенными, пока это не протестировано с кабинетом соответствующего партнёра.
 
+### NormAffiliates / La Casino GET postback
+
+The La Casino handler uses `GET /postback/norm/lacasino/registration` and `GET /postback/norm/lacasino/deposit`. Configure the Railway variable `NORM_LACASINO_POSTBACK_SECRET` before enabling either callback. The secret is supplied as the `key` query parameter.
+
+Use a dedicated BONUS UP click ID in NormAffiliates `source_id1` (the outgoing tracked link must pass `source_id1={click_id}`, where BONUS UP replaces `{click_id}` with the generated click ID). Do not use the static `source_id` as the click ID. The postback must return `source_id1` and the unique `event_id` for deposit events. The endpoint also accepts `player_currency` or `currency`.
+
+Create separate callback URLs for registration and deposit:
+
+```text
+https://bonus-up-bot-production.up.railway.app/postback/norm/lacasino/registration?key=YOUR_NORM_LACASINO_SECRET&source_id1={source_id1}&event_id={event_id}&player_currency={player_currency}
+https://bonus-up-bot-production.up.railway.app/postback/norm/lacasino/deposit?key=YOUR_NORM_LACASINO_SECRET&source_id1={source_id1}&event_id={event_id}&deposit_amount={deposit_amount}&player_currency={player_currency}
+```
+
+In NormAffiliates, select the corresponding macros in its key selector; exact availability and substitution should be verified with a test event before treating the integration as live. `deposit_amount` is documented in the partner cabinet as the player's cumulative deposits up to callback time, not necessarily the amount of the single deposit. The handler stores it as the amount field, so interpret it as cumulative unless NormAffiliates confirms a per-transaction amount macro. Deposit callbacks without a unique `event_id` are rejected to avoid collapsing repeat deposits. Duplicate partner events are acknowledged without being stored twice.
+
 ### TonPlay GET postback
 
 Endpoint `GET /postback/tonplay` принимает `key`, `click_id`, `transaction_id`, `event`, `amount` (или `amount_usd`) и `currency`. Он отключён, пока в Railway не задана отдельная переменная `TONPLAY_POSTBACK_SECRET`. Для события регистрации без ID транзакции используется уникальный ключ из click ID и типа события; для депозитов необходим ID транзакции, чтобы не объединять повторные депозиты.
