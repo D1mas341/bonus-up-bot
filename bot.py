@@ -3147,7 +3147,7 @@ async def vodka_postback(request):
     if signature.startswith("md5="):
         signature = signature[4:]
     # Vodka Money's guide specifies MD5(full_url + secret) in X-Signature.
-    full_url = str(request.url)
+    full_url = f"{request.scheme}://{request.host}{request.raw_path}"
     expected_signature = hashlib.md5((full_url + expected_secret).encode("utf-8")).hexdigest()
     if not signature or not hmac.compare_digest(signature, expected_signature):
         raise web.HTTPUnauthorized(text="Invalid Vodka Money signature.")
