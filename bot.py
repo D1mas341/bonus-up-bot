@@ -3137,6 +3137,73 @@ async def vavada_postback(request):
     return web.json_response({"ok": True, "recorded": True})
 
 
+async def vodka_postback(request):
+    """Vodka Money HTTP GET postback; validates the documented X-Signature."""
+    expected_secret = os.getenv("VODKA_POSTBACK_SECRET", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="Vodka Money postback signature is not configured.")
+
+    signature = str(request.headers.get("X-Signature", "")).strip().lower()
+    if signature.startswith("md5="):
+        signature = signature[4:]
+    # Vodka Money's guide specifies MD5(full_url + secret) in X-Signature.
+    full_url = str(request.url)
+    expected_signature = hashlib.md5((full_url + expected_secret).encode("utf-8")).hexdigest()
+    if not signature or not hmac.compare_digest(signature, expected_signature):
+        raise web.HTTPUnauthorized(text="Invalid Vodka Money signature.")
+
+    q = request.query
+    click_id = str(q.get("click_id") or q.get("subid") or q.get("sub_id") or
+                   q.get("aff_sub") or q.get("subid1") or q.get("clickid") or "").strip()[:128]
+    raw_event = str(q.get("type") or q.get("event") or q.get("status") or "conversion").strip().lower()[:80]
+    aliases = {
+        "click": "click",
+        "reg": "registration", "register": "registration", "registration": "registration",
+        "signup": "registration", "sign_up": "registration",
+        "fd": "first_deposit", "ftd": "first_deposit", "first deposit": "first_deposit",
+        "first_deposit": "first_deposit", "first-deposit": "first_deposit",
+        "any_second_deposit": "any_second_deposit", "second_deposit": "any_second_deposit",
+        "deposit": "deposit", "pd": "deposit",
+    }
+    event_type = aliases.get(raw_event, raw_event or "conversion")
+    # Clicks are already counted when the user leaves BONUS UP; acknowledge but
+    # do not create a conversion record for a duplicate network-side click event.
+    if event_type == "click":
+        return web.json_response({"ok": True, "ignored": "click event tracked on outbound redirect"})
+
+    event_id = str(q.get("transaction_id") or q.get("transaction") or q.get("tx_id") or
+                   q.get("event_id") or q.get("id") or "").strip()[:160]
+    if not event_id and click_id and event_type in {"registration", "first_deposit"}:
+        event_id = f"{click_id}:{event_type}"
+    amount_raw = q.get("usd_amount", q.get("amount", "0"))
+    try:
+        amount = float(amount_raw or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Invalid usd_amount.")
+    if not click_id or not event_id:
+        raise web.HTTPBadRequest(text="A tracked click ID and event ID are required.")
+    if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
+        raise web.HTTPBadRequest(text="Invalid usd_amount.")
+
+    payload = {k: v for k, v in q.items()}
+    with closing(db()) as con:
+        known_click = con.execute("SELECT click_id FROM clicks WHERE click_id=?", (click_id,)).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown click_id.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "Vodka Money", event_type, event_id, amount, "USD",
+                 json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
+
+
 async def terms_page(request):
     return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
 
@@ -3261,6 +3328,7 @@ async def main():
     app.router.add_post("/postback", partner_postback)
     app.router.add_get("/postback/tonplay", tonplay_postback)
     app.router.add_get("/postback/vavada", vavada_postback)
+    app.router.add_get("/postback/vodka", vodka_postback)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/health", health)
