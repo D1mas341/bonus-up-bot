@@ -3245,6 +3245,11 @@ async def norm_lacasino_postback(request):
         raise web.HTTPBadRequest(text="Invalid deposit_amount.")
 
     payload = {k: v for k, v in q.items() if k != "key"}
+    # NormAffiliates' built-in test can send the macro literally instead of
+    # a real click ID. Acknowledge that synthetic test without creating a
+    # conversion; real callbacks must still match a recorded BONUS UP click.
+    if click_id.startswith("{") and click_id.endswith("}"):
+        return web.json_response({"ok": True, "test": True, "recorded": False})
     with closing(db()) as con:
         known_click = con.execute(
             "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
