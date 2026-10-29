@@ -3075,7 +3075,7 @@ async def tonplay_postback(request):
 
 
 async def vavada_postback(request):
-    """Vavada GET postback adapter. Requires a dedicated secret and a known tracked click."""
+    """VavadaPart GET postback. Accepts the macros shown in the partner dashboard."""
     expected_secret = os.getenv("VAVADA_POSTBACK_SECRET", "")
     if not expected_secret:
         raise web.HTTPServiceUnavailable(text="Vavada postbacks are not configured.")
@@ -3083,13 +3083,28 @@ async def vavada_postback(request):
     if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
         raise web.HTTPUnauthorized(text="Invalid postback credentials.")
 
-    # Vavada macros shown in its UI: subid={click_id}, tid={tid},
-    # payout={reward}, currency={currency}. Accept documented/legacy aliases too.
+    # VavadaPart's guide documents click_id, reward, tid and currency.
+    # Its URL editor also shows action and player_id; accept both forms.
     click_id = str(request.query.get("subid") or request.query.get("click_id") or "").strip()[:128]
-    event_type = str(request.query.get("status") or request.query.get("event") or "conversion").strip().lower()[:80]
-    event_id = str(request.query.get("tid") or request.query.get("event_id") or request.query.get("transaction_id") or "").strip()[:160]
-    if not event_id and click_id and event_type in {"register", "registration", "signup"}:
+    raw_event = str(request.query.get("status") or request.query.get("action") or
+                    request.query.get("event") or "conversion").strip().lower()[:80]
+    event_aliases = {
+        "reg": "registration", "register": "registration", "registration": "registration",
+        "signup": "registration", "sign_up": "registration",
+        "dep": "first_deposit", "deposit": "first_deposit",
+        "first deposit": "first_deposit", "first_deposit": "first_deposit",
+        "first-deposit": "first_deposit", "ftd": "first_deposit",
+        "reward": "reward", "sale": "reward", "commission": "reward",
+    }
+    event_type = event_aliases.get(raw_event, raw_event or "conversion")
+
+    # tid is preferred for distinct RevShare/reward transactions. player_id
+    # is accepted as a fallback because it is the macro shown in the URL editor.
+    event_id = str(request.query.get("tid") or request.query.get("event_id") or
+                   request.query.get("transaction_id") or request.query.get("player_id") or "").strip()[:160]
+    if not event_id and click_id and event_type == "registration":
         event_id = f"{click_id}:registration"
+
     currency = str(request.query.get("currency", "EUR")).strip().upper()[:8] or "EUR"
     amount_raw = request.query.get("payout", request.query.get("reward", request.query.get("amount", "0")))
     try:
@@ -3097,7 +3112,7 @@ async def vavada_postback(request):
     except (TypeError, ValueError):
         raise web.HTTPBadRequest(text="Invalid payout amount.")
     if not click_id or not event_id:
-        raise web.HTTPBadRequest(text="subid/click_id and tid/event_id are required.")
+        raise web.HTTPBadRequest(text="subid/click_id and tid/event_id/player_id are required.")
     if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
         raise web.HTTPBadRequest(text="Invalid payout amount.")
 
