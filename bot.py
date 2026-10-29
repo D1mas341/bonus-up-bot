@@ -3206,19 +3206,26 @@ async def vodka_postback(request):
 
 async def norm_lacasino_postback(request):
     """NormAffiliates callback for La Casino registration/deposit events."""
+    # NormAffiliates' built-in tester may send literal macros rather than
+    # real event data. Allow only that synthetic probe through without the
+    # shared secret; it is acknowledged below and never recorded as a conversion.
+    q = request.query
+    synthetic_test = (
+        q.get("source_id1") == "{source_id1}"
+        and q.get("event_id", "{event_id}") == "{event_id}"
+    )
     expected_secret = os.getenv("NORM_LACASINO_POSTBACK_SECRET", "")
-    if not expected_secret:
-        raise web.HTTPServiceUnavailable(text="NormAffiliates La Casino postbacks are not configured.")
-    supplied_secret = request.query.get("key", "")
-    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
-        raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+    supplied_secret = q.get("key", "")
+    if not synthetic_test:
+        if not expected_secret:
+            raise web.HTTPServiceUnavailable(text="NormAffiliates La Casino postbacks are not configured.")
+        if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+            raise web.HTTPUnauthorized(text="Invalid postback credentials.")
 
     # The route fixes the event type; event_id identifies the event, not its type.
     event_type = str(request.match_info.get("event_type", "")).strip().lower()
     if event_type not in {"registration", "deposit"}:
         raise web.HTTPBadRequest(text="Unsupported event type.")
-
-    q = request.query
     # Use a dedicated source_id slot for BONUS UP's click ID. Do not use
     # source_id itself as it may be the publisher's static UTM/source code.
     click_id = str(q.get("source_id1") or q.get("source_id2") or
