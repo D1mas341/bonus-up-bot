@@ -2877,6 +2877,13 @@ def is_partner_url(value):
         return False
 
 
+def apply_tracking_macros(target, click_id, user_id=None):
+    """Substitute BONUS UP click and user IDs in affiliate tracking URLs."""
+    return (target.replace("{click_id}", str(click_id))
+                  .replace("{clickid}", str(click_id))
+                  .replace("{uid}", str(user_id or "")))
+
+
 async def go_offer(request):
     try:
         offer_id = int(request.match_info["offer_id"])
@@ -2893,8 +2900,7 @@ async def go_offer(request):
     if not row or not is_partner_url(row[0]):
         raise web.HTTPNotFound(text="Партнёрская ссылка ещё не подключена.")
     target = row[0]
-    if "{click_id}" in target:
-        target = target.replace("{click_id}", click_id)
+    target = apply_tracking_macros(target, click_id, tracking_user_id(request))
     raise web.HTTPFound(target)
 
 async def go_dual_offer(request):
@@ -2921,8 +2927,7 @@ async def go_dual_offer(request):
                              target_url=target, utm_source=utm_source,
                              utm_campaign=utm_campaign)
         con.commit()
-    if "{click_id}" in target:
-        target = target.replace("{click_id}", click_id)
+    target = apply_tracking_macros(target, click_id, tracking_user_id(request))
     raise web.HTTPFound(target)
 
 
@@ -2942,8 +2947,7 @@ async def go_banner(request):
                              utm_source=utm_source, utm_campaign=utm_campaign)
         con.execute("UPDATE banners SET clicks=clicks+1 WHERE id=?", (banner_id,))
         con.commit()
-    if "{click_id}" in target:
-        target = target.replace("{click_id}", click_id)
+    target = apply_tracking_macros(target, click_id, tracking_user_id(request))
     raise web.HTTPFound(target)
 
 async def go_campaign(request):
@@ -2964,8 +2968,7 @@ async def go_campaign(request):
                              utm_source=utm_source, utm_campaign=utm_campaign)
         con.execute("UPDATE campaigns SET click_count=click_count+1 WHERE id=?", (campaign_id,))
         con.commit()
-    if "{click_id}" in target:
-        target = target.replace("{click_id}", click_id)
+    target = apply_tracking_macros(target, click_id, tracking_user_id(request))
     raise web.HTTPFound(target)
 
 
@@ -3204,6 +3207,66 @@ async def vodka_postback(request):
     return web.json_response({"ok": True, "recorded": True})
 
 
+async def sykaaa_postback(request):
+    """SYKAAA / Snow Dunes Partners S2S postback for registration and first deposit."""
+    q = request.query
+    expected_secret = os.getenv("SYKAAA_POSTBACK_SECRET", "")
+    supplied_secret = q.get("key", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="SYKAAA postbacks are not configured.")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+
+    event_type = str(request.match_info.get("event_type", "")).strip().lower()
+    if event_type not in {"registration", "deposit"}:
+        raise web.HTTPBadRequest(text="Unsupported event type.")
+
+    click_id = str(q.get("hit") or q.get("clickid") or q.get("click_id") or
+                   q.get("subid") or "").strip()[:128]
+    # The partner's test tool may send literal macros. Acknowledge tests without
+    # ever recording them as real conversions.
+    if click_id.startswith("{") and click_id.endswith("}"):
+        return web.json_response({"ok": True, "test": True, "recorded": False})
+    if not click_id:
+        raise web.HTTPBadRequest(text="Missing SYKAAA hit/click ID.")
+
+    event_id = str(q.get("event_id") or q.get("transaction_id") or
+                   q.get("deposit_id") or "").strip()[:160]
+    if not event_id and event_type == "registration":
+        event_id = f"{click_id}:registration"
+    if not event_id:
+        raise web.HTTPBadRequest(text="Missing unique event_id for deposit.")
+
+    amount_raw = q.get("amount", q.get("deposit_amount", q.get("sum", "0")))
+    try:
+        amount = float(amount_raw or 0) if event_type == "deposit" else 0.0
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+    if not math.isfinite(amount) or not (0 <= amount < 1e9):
+        raise web.HTTPBadRequest(text="Invalid amount.")
+
+    currency = str(q.get("currency") or "USD").strip().upper()[:8] or "USD"
+    payload = {k: v for k, v in q.items() if k != "key"}
+    with closing(db()) as con:
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown SYKAAA click ID.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "SYKAAA", event_type, event_id, amount, currency,
+                 json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
+
+
 async def norm_lacasino_postback(request):
     """NormAffiliates callback for La Casino registration/deposit events."""
     # NormAffiliates' built-in tester may send literal macros rather than
@@ -3408,6 +3471,7 @@ async def main():
     app.router.add_get("/postback/tonplay", tonplay_postback)
     app.router.add_get("/postback/vavada", vavada_postback)
     app.router.add_get("/postback/vodka", vodka_postback)
+    app.router.add_get("/postback/sykaaa/{event_type}", sykaaa_postback)
     app.router.add_get("/postback/norm/lacasino/{event_type}", norm_lacasino_postback)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
