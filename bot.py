@@ -3090,10 +3090,12 @@ async def vavada_postback(request):
                     request.query.get("event") or "conversion").strip().lower()[:80]
     event_aliases = {
         "reg": "registration", "register": "registration", "registration": "registration",
-        "signup": "registration", "sign_up": "registration",
+        "signup": "registration", "sign_up": "registration", "sign-up": "registration",
+        "new_registration": "registration", "new registration": "registration",
         "dep": "first_deposit", "deposit": "first_deposit",
         "first deposit": "first_deposit", "first_deposit": "first_deposit",
-        "first-deposit": "first_deposit", "ftd": "first_deposit",
+        "first-deposit": "first_deposit", "firstdeposit": "first_deposit",
+        "first_dep": "first_deposit", "firstdep": "first_deposit", "ftd": "first_deposit",
         "reward": "reward", "sale": "reward", "commission": "reward",
     }
     event_type = event_aliases.get(raw_event, raw_event or "conversion")
