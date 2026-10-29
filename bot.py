@@ -3211,9 +3211,14 @@ async def norm_lacasino_postback(request):
     # shared secret; it is acknowledged below and never recorded as a conversion.
     q = request.query
     synthetic_test = (
-        q.get("source_id1") == "{source_id1}"
-        and q.get("event_id", "{event_id}") == "{event_id}"
+        q.get("source_id1", "{source_id1}") in ("", "{source_id1}")
+        and q.get("event_id", "{event_id}") in ("", "{event_id}")
+        and q.get("deposit_amount", "{deposit_amount}") in ("", "{deposit_amount}")
     )
+    if synthetic_test:
+        # A tester may omit macro values entirely. Acknowledge this probe
+        # before auth/validation and never persist it as a real conversion.
+        return web.json_response({"ok": True, "test": True, "recorded": False})
     expected_secret = os.getenv("NORM_LACASINO_POSTBACK_SECRET", "")
     supplied_secret = q.get("key", "")
     if not synthetic_test:
