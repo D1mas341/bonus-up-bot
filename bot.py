@@ -2788,7 +2788,7 @@ function renderBanners(items){
   const b=items[idx];
   const isTonPlay=String(b.title||"").toLowerCase().includes("tonplay");
    const tonOffer=isTonPlay?all.find(item=>String(item.name||"").toLowerCase().includes("tonplay")):null;
-   const bannerImage='<img class="banner-backdrop" src="'+esc(b.image_url||"")+'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"")+'" alt="" loading="lazy">';
+   const bannerImage='<img class="banner-backdrop" src="'+esc(b.image_url||"")+'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"")+'" alt="" loading="eager" fetchpriority="high">';
    if(isTonPlay && tonOffer && (tonOffer.mini_app_url||tonOffer.site_url)){
     box.innerHTML='<div class="banner-image-link tonplay-banner-trigger" role="button" tabindex="0" aria-label="Показать кнопки TonPlay">'+bannerImage+'</div><div class="banner-action-links">'+
       (tonOffer.mini_app_url?'<a class="play tonplay-telegram" href="/go/dual/'+Number(tonOffer.id)+'/mini" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+
@@ -2827,7 +2827,7 @@ function renderBanners(items){
  show();
  restart();
 }
-document.querySelectorAll(".tab").forEach(b=>b.onclick=async()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");const cat=b.dataset.cat;render(cat);renderBanners(await fetchBanners(cat))});load();document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")load()});
+document.querySelectorAll(".tab").forEach(b=>b.onclick=async()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");const cat=b.dataset.cat;render(cat);const banners=await fetchBanners(cat);renderBanners(banners);saveBannerCache(cat,banners)});load();document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")load()});
 </script></body></html>'''
 
 async def mini_app(request):
