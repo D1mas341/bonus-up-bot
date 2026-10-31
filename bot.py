@@ -2765,7 +2765,16 @@ document.getElementById("modalBackdrop").addEventListener("click",e=>{if(e.targe
 async function copyPromo(v){try{if(navigator.clipboard&&navigator.clipboard.writeText)await navigator.clipboard.writeText(v);else{const el=document.createElement("textarea");el.value=v;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove()}if(tg&&tg.showPopup)tg.showPopup({title:t("copiedTitle"),message:t("copied"),buttons:[{type:"ok"}]})}catch(e){if(tg&&tg.showAlert)tg.showAlert(t("copyFailed")+v)}}
 let trackingToken="";
 document.addEventListener("click",function(e){const a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a)return;try{const u=new URL(a.href,location.href);if(u.origin!==location.origin||!u.pathname.startsWith("/go/"))return;if(trackingToken&&!u.searchParams.has("track"))u.searchParams.set("track",trackingToken);if(tg&&typeof tg.openLink==="function"){e.preventDefault();e.stopPropagation();tg.openLink(u.href)}else if(trackingToken){a.href=u.href}}catch(_e){}},true);
-async function load(){try{const tokenResponse=await fetch("/api/tracking-token",{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});if(tokenResponse.ok){const tokenData=await tokenResponse.json();trackingToken=tokenData.token||""}const r=await fetch("/api/offers",{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});all=await r.json();renderBanners(await fetchBanners("casino"));render("casino")}catch(e){document.getElementById("offers").innerHTML='<div class="empty">Не удалось загрузить предложения.</div>'}}
+const APP_CACHE_KEY="bonusUpMiniAppCacheV1";
+function readAppCache(){try{const c=JSON.parse(localStorage.getItem(APP_CACHE_KEY)||"null");if(!c||!Array.isArray(c.offers))return false;all=c.offers;render(currentCat);const banners=c.banners&&Array.isArray(c.banners[currentCat])?c.banners[currentCat]:[];renderBanners(banners);return true}catch(e){return false}}
+function writeAppCache(){try{const old=JSON.parse(localStorage.getItem(APP_CACHE_KEY)||"{}");localStorage.setItem(APP_CACHE_KEY,JSON.stringify({offers:all,banners:old.banners&&typeof old.banners==="object"?old.banners:{},savedAt:Date.now()}))}catch(e){}}
+function saveBannerCache(section,items){try{const c=JSON.parse(localStorage.getItem(APP_CACHE_KEY)||"{}");c.offers=all;c.banners=c.banners&&typeof c.banners==="object"?c.banners:{};c.banners[section]=items;c.savedAt=Date.now();localStorage.setItem(APP_CACHE_KEY,JSON.stringify(c))}catch(e){}}
+async function load(){const headers={"X-Telegram-Init-Data":(tg&&tg.initData)||""};const hadCache=readAppCache();
+ const offersTask=fetch("/api/offers",{cache:"no-store",headers}).then(async r=>{if(!r.ok)throw new Error("offers "+r.status);const data=await r.json();if(!Array.isArray(data))throw new Error("invalid offers payload");all=data;render(currentCat);writeAppCache()}).catch(e=>{if(!hadCache)document.getElementById("offers").innerHTML='<div class="empty">'+esc(t("failed"))+'</div>';});
+ const bannersTask=fetchBanners("casino").then(items=>{renderBanners(items);saveBannerCache("casino",items)});
+ const tokenTask=fetch("/api/tracking-token",{cache:"no-store",headers}).then(async r=>{if(r.ok){const data=await r.json();trackingToken=data.token||""}}).catch(()=>{});
+ await Promise.allSettled([offersTask,bannersTask,tokenTask]);
+}
 async function fetchBanners(section){try{const r=await fetch("/api/banners?section="+encodeURIComponent(section),{cache:"no-store",headers:{"X-Telegram-Init-Data":tg.initData}});return r.ok?await r.json():[]}catch(e){return []}}
 let bannerTimer=null;
 function renderBanners(items){
@@ -2779,7 +2788,7 @@ function renderBanners(items){
   const b=items[idx];
   const isTonPlay=String(b.title||"").toLowerCase().includes("tonplay");
    const tonOffer=isTonPlay?all.find(item=>String(item.name||"").toLowerCase().includes("tonplay")):null;
-   const bannerImage='<img class="banner-backdrop" src="'+esc(b.image_url||"")+'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"")+'" alt="" loading="lazy">';
+   const bannerImage='<img class="banner-backdrop" src="'+esc(b.image_url||"")+'" alt="" aria-hidden="true"><img class="banner-foreground" src="'+esc(b.image_url||"")+'" alt="" loading="eager" fetchpriority="high">';
    if(isTonPlay && tonOffer && (tonOffer.mini_app_url||tonOffer.site_url)){
     box.innerHTML='<div class="banner-image-link tonplay-banner-trigger" role="button" tabindex="0" aria-label="Показать кнопки TonPlay">'+bannerImage+'</div><div class="banner-action-links">'+
       (tonOffer.mini_app_url?'<a class="play tonplay-telegram" href="/go/dual/'+Number(tonOffer.id)+'/mini" target="_blank" rel="noopener"><svg class="telegram-brand-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="display:inline-block;vertical-align:-4px;margin-right:7px;fill:currentColor"><path d="M9.78 18.65c-.38 0-.32-.14-.45-.49l-1.1-3.63 8.46-5.3c.37-.23.16-.36-.12-.19l-10.45 4.15-3.58-1.12c-.77-.24-.78-.77.17-1.14L21.02 5.2c.62-.23 1.22.15 1.02 1.14l-2.9 13.68c-.2.97-.79 1.2-1.6.75l-4.45-3.28-2.14 2.07c-.24.24-.44.44-.9.44z"/></svg>Играть в Telegram</a>':'')+
@@ -2818,7 +2827,7 @@ function renderBanners(items){
  show();
  restart();
 }
-document.querySelectorAll(".tab").forEach(b=>b.onclick=async()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");const cat=b.dataset.cat;render(cat);renderBanners(await fetchBanners(cat))});load();document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")load()});
+document.querySelectorAll(".tab").forEach(b=>b.onclick=async()=>{document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));b.classList.add("active");const cat=b.dataset.cat;render(cat);const banners=await fetchBanners(cat);renderBanners(banners);saveBannerCache(cat,banners)});load();document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")load()});
 </script></body></html>'''
 
 async def mini_app(request):
