@@ -74,6 +74,20 @@ https://bonus-up-bot-production.up.railway.app/postback/tonplay?key=YOUR_TONPLAY
 
 В партнёрской ссылке TonPlay должен сохраняться плейсхолдер BONUS UP `{click_id}`, который сервер заменяет на ID клика перед перенаправлением. Не меняйте имя этого параметра без согласованного изменения callback. Перед включением убедитесь, что в форме TonPlay выбран нужный тип событий и кабинет допускает GET callback. Секрет передаётся в query string и может попадать в журналы запросов; используйте отдельный случайный секрет, не токен бота и не `POSTBACK_SECRET`.
 
+
+### Mellstroy GET S2S postbacks
+
+Mellstroy supports separate GET callbacks for REG and FTD. Configure the Railway service variable `MELLSTROY_POSTBACK_SECRET`; the same secret is sent as the `key` query parameter in both callbacks. BONUS UP passes its unique click ID to Mellstroy in the outgoing affiliate URL as `sub2={click_id}`. The tracking redirect replaces `{click_id}` with the generated click ID.
+
+Use these callback templates in Mellstroy (replace the secret placeholder with the value configured in Railway):
+
+```text
+https://bonus-up-bot-production.up.railway.app/postback/mellstroy/reg?key=YOUR_MELLSTROY_POSTBACK_SECRET&sub2={sub2}&date={date}
+https://bonus-up-bot-production.up.railway.app/postback/mellstroy/ftd?key=YOUR_MELLSTROY_POSTBACK_SECRET&sub2={sub2}&date={date}&amount={amount}
+```
+
+The handler records event types `REG` and `FTD`, rejects unknown click IDs, and acknowledges duplicate callbacks without inserting them twice. It uses a deterministic event key per click and event type because Mellstroy has not supplied a separate event-ID macro; this is appropriate for REG and first-deposit-only FTD events, not for tracking multiple deposits. The `date` macro is retained in the event payload. Mellstroy has not supplied a currency macro, so FTD amounts are stored with currency `UNKNOWN` until the partner confirms the currency or provides a currency macro. Test callbacks containing the literal `{sub2}` macro are acknowledged but are not stored as real conversions.
+
 ### Формат стандартного postback
 
 Запрос отправляется методом POST на `/postback`, с заголовком `X-Postback-Secret: <ваш секрет>` и JSON-телом:
