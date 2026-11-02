@@ -2891,27 +2891,34 @@ def apply_tracking_macros(target, click_id, user_id=None):
     target = (target.replace("{click_id}", str(click_id))
                     .replace("{clickid}", str(click_id))
                     .replace("{uid}", str(user_id or "")))
-    # Mellstroy's banner URL stores the click identifier in sub2. If the
-    # admin pasted a fixed sub2 value instead of the {click_id} macro, replace
-    # it on every outbound click so the later REG/FTD callback can resolve
-    # the exact click row in our database.
+    # Mellstroy supplied gkeifg.com as the current partner URL. Old mstr*.live
+    # links saved in banners/offers must be migrated at redirect time so that
+    # every click uses the current domain and the partner's required sub2 macro.
     try:
         parsed = urlparse(target)
         hostname = (parsed.hostname or "").lower()
-        # Mellstroy rotates numbered tracking domains (for example,
-        # mstr1382.live and mstr0933.live). Preserve the current host and
-        # replace only the fixed sub2 attribution value.
-        if ((hostname.startswith("mstr") and hostname.endswith(".live") and hostname[4:-5].isdigit())
-                or hostname == "gkeifg.com"):
-            query = parse_qsl(parsed.query, keep_blank_values=True)
-            if any(key == "sub2" for key, _ in query):
-                query = [(key, str(click_id) if key == "sub2" else value)
-                         for key, value in query]
-                target = urlunparse(parsed._replace(query=urlencode(query)))
+        old_mellstroy_host = (
+            hostname.startswith("mstr") and hostname.endswith(".live")
+            and hostname[4:-5].isdigit()
+        )
+        if old_mellstroy_host or hostname == "gkeifg.com":
+            query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                     if key not in {"open", "p", "sub2"}]
+            query.extend([
+                ("open", "register"),
+                ("p", "erxs"),
+                ("sub2", str(click_id)),
+            ])
+            target = urlunparse(parsed._replace(
+                scheme="https",
+                netloc="gkeifg.com",
+                path="/",
+                query=urlencode(query),
+                fragment="",
+            ))
     except (TypeError, ValueError):
         pass
     return target
-
 
 async def go_offer(request):
     try:
