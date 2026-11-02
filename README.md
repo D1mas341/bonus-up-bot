@@ -86,7 +86,7 @@ https://bonus-up-bot-production.up.railway.app/postback/mellstroy/reg?key=YOUR_M
 https://bonus-up-bot-production.up.railway.app/postback/mellstroy/ftd?key=YOUR_MELLSTROY_POSTBACK_SECRET&sub2={sub2}&date={date}&amount={amount}
 ```
 
-The handler records event types `REG` and `FTD`, rejects unknown click IDs, and acknowledges duplicate callbacks without inserting them twice. It uses a deterministic event key per click and event type because Mellstroy has not supplied a separate event-ID macro; this is appropriate for REG and first-deposit-only FTD events, not for tracking multiple deposits. The `date` macro is retained in the event payload. Mellstroy has not supplied a currency macro, so FTD amounts are stored with currency `UNKNOWN` until the partner confirms the currency or provides a currency macro. Test callbacks containing the literal `{sub2}` macro are acknowledged but are not stored as real conversions.
+The handler records event types `REG` and `FTD`, rejects unknown click IDs, and acknowledges duplicate callbacks without inserting them twice. It uses a deterministic event key per click and event type because Mellstroy has not supplied a separate event-ID macro; this is appropriate for REG and first-deposit-only FTD events, not for tracking multiple deposits. The `date` macro is retained in the event payload. Lina confirmed that Mellstroy's `{amount}` macro is denominated in USD, so FTD amounts are stored with currency `USD`. Test callbacks containing the literal `{sub2}` macro are acknowledged but are not stored as real conversions. Test callbacks containing the literal `{sub2}` macro are acknowledged but are not stored as real conversions.
 
 ### Формат стандартного postback
 
