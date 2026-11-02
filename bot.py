@@ -3344,8 +3344,10 @@ async def mellstroy_postback(request):
         known_click = con.execute(
             "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
         ).fetchone()
-        if not known_click:
-            raise web.HTTPNotFound(text="Unknown BONUS UP click ID.")
+        # Never discard a genuine partner event solely because click attribution
+        # is missing or the partner returned an ID we cannot match. Store it so
+        # REG/FTD still appear in partner analytics; mark attribution explicitly.
+        payload["_bonus_up_click_matched"] = bool(known_click)
         try:
             con.execute(
                 """INSERT INTO conversion_events
@@ -3357,7 +3359,9 @@ async def mellstroy_postback(request):
             con.commit()
         except sqlite3.IntegrityError:
             return web.json_response({"ok": True, "duplicate": True})
-    return web.json_response({"ok": True, "recorded": True})
+    if not known_click:
+        print(f"[mellstroy-postback] stored_unattributed event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
+    return web.json_response({"ok": True, "recorded": True, "attributed": bool(known_click)})
 
 
 async def norm_lacasino_postback(request):
