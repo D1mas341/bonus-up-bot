@@ -2987,7 +2987,7 @@ async def partner_postback(request):
     if not expected_secret:
         raise web.HTTPServiceUnavailable(text="Partner postbacks are not configured.")
     supplied_secret = request.headers.get("X-Postback-Secret", "")
-    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+    if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
         raise web.HTTPUnauthorized(text="Invalid postback credentials.")
     # Accept only a JSON object over POST. Do not silently treat query parameters
     # as a postback payload: they are easier to leak into logs and browser history.
@@ -3041,7 +3041,7 @@ async def tonplay_postback(request):
     if not expected_secret:
         raise web.HTTPServiceUnavailable(text="TonPlay postbacks are not configured.")
     supplied_secret = request.query.get("key", "")
-    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+    if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
         raise web.HTTPUnauthorized(text="Invalid postback credentials.")
 
     # TonPlay documents {click_slug}, {action}, {amount_usd}, {tx_id}.
@@ -3092,7 +3092,7 @@ async def vavada_postback(request):
     if not expected_secret:
         raise web.HTTPServiceUnavailable(text="Vavada postbacks are not configured.")
     supplied_secret = request.query.get("key", "")
-    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+    if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
         raise web.HTTPUnauthorized(text="Invalid postback credentials.")
 
     # VavadaPart's guide documents click_id, reward, tid and currency.
@@ -3223,7 +3223,7 @@ async def sykaaa_postback(request):
     supplied_secret = q.get("key", "")
     if not expected_secret:
         raise web.HTTPServiceUnavailable(text="SYKAAA postbacks are not configured.")
-    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+    if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
         raise web.HTTPUnauthorized(text="Invalid postback credentials.")
 
     event_type = str(request.match_info.get("event_type", "")).strip().lower()
@@ -3283,7 +3283,7 @@ async def mellstroy_postback(request):
     supplied_secret = q.get("key", "")
     if not expected_secret:
         raise web.HTTPServiceUnavailable(text="Mellstroy postbacks are not configured.")
-    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+    if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
         raise web.HTTPUnauthorized(text="Invalid Mellstroy postback credentials.")
 
     event_code = str(request.match_info.get("event_type", "")).strip().lower()
@@ -3353,7 +3353,7 @@ async def norm_lacasino_postback(request):
     if not synthetic_test:
         if not expected_secret:
             raise web.HTTPServiceUnavailable(text="NormAffiliates La Casino postbacks are not configured.")
-        if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
             raise web.HTTPUnauthorized(text="Invalid postback credentials.")
 
     # The route fixes the event type; event_id identifies the event, not its type.
