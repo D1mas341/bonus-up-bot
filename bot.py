@@ -9,7 +9,7 @@ import math
 import time
 import uuid
 from io import BytesIO
-from urllib.parse import urlparse, parse_qsl
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
@@ -2888,9 +2888,24 @@ def is_partner_url(value):
 
 def apply_tracking_macros(target, click_id, user_id=None):
     """Substitute BONUS UP click and user IDs in affiliate tracking URLs."""
-    return (target.replace("{click_id}", str(click_id))
-                  .replace("{clickid}", str(click_id))
-                  .replace("{uid}", str(user_id or "")))
+    target = (target.replace("{click_id}", str(click_id))
+                    .replace("{clickid}", str(click_id))
+                    .replace("{uid}", str(user_id or "")))
+    # Mellstroy's banner URL stores the click identifier in sub2. If the
+    # admin pasted a fixed sub2 value instead of the {click_id} macro, replace
+    # it on every outbound click so the later REG/FTD callback can resolve
+    # the exact click row in our database.
+    try:
+        parsed = urlparse(target)
+        if (parsed.hostname or "").lower() == "mstr1382.live":
+            query = parse_qsl(parsed.query, keep_blank_values=True)
+            if any(key == "sub2" for key, _ in query):
+                query = [(key, str(click_id) if key == "sub2" else value)
+                         for key, value in query]
+                target = urlunparse(parsed._replace(query=urlencode(query)))
+    except (TypeError, ValueError):
+        pass
+    return target
 
 
 async def go_offer(request):
