@@ -3346,7 +3346,360 @@ async def sykaaa_postback(request):
     return web.json_response({"ok": True, "recorded": True})
 
 
+async def one_win_postback(request):
+    """1win Partners S2S callbacks for registration and first-deposit events."""
+    q = request.query
+    expected_secret = os.getenv("ONEWIN_POSTBACK_SECRET", "")
+    supplied_secret = q.get("key", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="1win postbacks are not configured.")
+    if not supplied_secret or not hmac.compare_digest(
+        supplied_secret.encode("utf-8"), expected_secret.encode("utf-8")
+    ):
+        raise web.HTTPUnauthorized(text="Invalid 1win postback credentials.")
+
+    event_code = str(request.match_info.get("event_type", "")).strip().lower()
+    if event_code not in {"reg", "ftd"}:
+        raise web.HTTPBadRequest(text="Unsupported 1win event type.")
+
+    # 1win SubID 1 is configured to carry the BONUS UP click ID.
+    click_id = str(q.get("sub1") or q.get("click_id") or "").strip()[:128]
+    if click_id.startswith("{") and click_id.endswith("}"):
+        return web.json_response({"ok": True, "test": True, "recorded": False})
+    if not click_id:
+        raise web.HTTPBadRequest(text="Missing 1win SubID 1 click ID.")
+
+    event_type = "REG" if event_code == "reg" else "FTD"
+    event_id = str(q.get("transaction_id") or q.get("event_id") or "").strip()[:160]
+    # Registration and first-deposit are one-time events for this click.
+    # If 1win does not supply a transaction/event ID, this stable fallback
+    # prevents repeated callbacks from creating duplicate conversions.
+    if not event_id:
+        event_id = f"{click_id}:{event_type}"
+
+    amount = 0.0
+    if event_code == "ftd":
+        amount_raw = q.get("количество", q.get("amount", ""))
+        try:
+            amount = float(str(amount_raw).replace(",", "."))
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Missing or invalid 1win FTD amount.")
+        if not math.isfinite(amount) or not (0 <= amount < 1e9):
+            raise web.HTTPBadRequest(text="Invalid 1win FTD amount.")
+
+    # 1win partner account is displayed in RUB; allow an explicit currency
+    # parameter if the partner callback supports and supplies one.
+    currency = str(q.get("currency") or "RUB").strip().upper()[:8] or "RUB"
+    payload = {k: v for k, v in q.items() if k != "key"}
+    with closing(db()) as con:
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
+        payload["_bonus_up_click_matched"] = bool(known_click)
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "1win", event_type, event_id, amount, currency,
+                 json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    if not known_click:
+        print(f"[1win-postback] stored_unattributed event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
+    return web.json_response({"ok": True, "recorded": True, "attributed": bool(known_click)})
+
+
 async def mellstroy_postback(request):
+    """Mellstroy GET S2S callbacks for REG and FTD."""
+    q = request.query
+    expected_secret = os.getenv("MELLSTROY_POSTBACK_SECRET", "")
+    supplied_secret = q.get("key", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="Mellstroy postbacks are not configured.")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
+        raise web.HTTPUnauthorized(text="Invalid Mellstroy postback credentials.")
+
+    event_code = str(request.match_info.get("event_type", "")).strip().lower()
+    if event_code not in {"reg", "ftd"}:
+        raise web.HTTPBadRequest(text="Unsupported Mellstroy event type.")
+
+    click_id = str(q.get("sub2", "")).strip()[:128]
+    # Partner-side test requests may contain literal macros; acknowledge them
+    # without recording a synthetic conversion.
+    if click_id.startswith("{") and click_id.endswith("}"):
+        return web.json_response({"ok": True, "test": True, "recorded": False})
+    if not click_id:
+        raise web.HTTPBadRequest(text="Missing Mellstroy sub2 Click ID.")
+
+    event_type = "REG" if event_code == "reg" else "FTD"
+    event_id = f"{click_id}:{event_type}"
+    amount = 0.0
+    if event_code == "ftd":
+        try:
+            amount = float(q.get("amount", ""))
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Missing or invalid FTD amount.")
+        if not math.isfinite(amount) or not (0 <= amount < 1e9):
+            raise web.HTTPBadRequest(text="Invalid FTD amount.")
+
+    # Lina confirmed that Mellstroy FTD amounts are sent in USD.
+    # The partner event date is retained in payload; created_at remains the
+    # server receipt timestamp for analytics.
+    payload = {k: v for k, v in q.items() if k != "key"}
+    with closing(db()) as con:
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
+        # Never discard a genuine partner event solely because click attribution
+        # is missing or the partner returned an ID we cannot match. Store it so
+        # REG/FTD still appear in partner analytics; mark attribution explicitly.
+        payload["_bonus_up_click_matched"] = bool(known_click)
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "Mellstroy", event_type, event_id, amount, "USD",
+                 json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    if not known_click:
+        print(f"[mellstroy-postback] stored_unattributed event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
+    return web.json_response({"ok": True, "recorded": True, "attributed": bool(known_click)})
+
+
+async def norm_lacasino_postback(request):
+    """NormAffiliates callback for La Casino registration/deposit events."""
+    # NormAffiliates' built-in tester may send literal macros rather than
+    # real event data. Allow only that synthetic probe through without the
+    # shared secret; it is acknowledged below and never recorded as a conversion.
+    q = request.query
+    synthetic_test = (
+        q.get("source_id1", "{source_id1}") in ("", "{source_id1}")
+        and q.get("event_id", "{event_id}") in ("", "{event_id}")
+        and q.get("deposit_amount", "{deposit_amount}") in ("", "{deposit_amount}")
+    )
+    if synthetic_test:
+        # A tester may omit macro values entirely. Acknowledge this probe
+        # before auth/validation and never persist it as a real conversion.
+        return web.json_response({"ok": True, "test": True, "recorded": False})
+    expected_secret = os.getenv("NORM_LACASINO_POSTBACK_SECRET", "")
+    supplied_secret = q.get("key", "")
+    if not synthetic_test:
+        if not expected_secret:
+            raise web.HTTPServiceUnavailable(text="NormAffiliates La Casino postbacks are not configured.")
+        if not supplied_secret or not hmac.compare_digest(supplied_secret.encode('utf-8'), expected_secret.encode('utf-8')):
+            raise web.HTTPUnauthorized(text="Invalid postback credentials.")
+
+    # The route fixes the event type; event_id identifies the event, not its type.
+    event_type = str(request.match_info.get("event_type", "")).strip().lower()
+    if event_type not in {"registration", "deposit"}:
+        raise web.HTTPBadRequest(text="Unsupported event type.")
+    # Use a dedicated source_id slot for BONUS UP's click ID. Do not use
+    # source_id itself as it may be the publisher's static UTM/source code.
+    click_id = str(q.get("source_id1") or q.get("source_id2") or
+                   q.get("source_id3") or q.get("source_id4") or
+                   q.get("source_id5") or q.get("click_id") or
+                   q.get("subid") or "").strip()[:128]
+    event_id = str(q.get("event_id") or "").strip()[:160]
+    if not click_id:
+        raise web.HTTPBadRequest(text="Missing BONUS UP click ID (source_id1).")
+    if not event_id and event_type == "registration":
+        event_id = f"{click_id}:registration"
+    if not event_id:
+        raise web.HTTPBadRequest(text="Missing unique event_id for deposit.")
+
+    # NormAffiliates' built-in test can send macros literally instead of
+    # real values. Acknowledge this synthetic test before parsing numeric
+    # deposit fields; never record it as a real conversion.
+    if click_id.startswith("{") and click_id.endswith("}"):
+        return web.json_response({"ok": True, "test": True, "recorded": False})
+
+    currency = str(q.get("player_currency") or q.get("currency") or "EUR").strip().upper()[:8] or "EUR"
+    # NormAffiliates defines deposit_amount as the player's cumulative deposits
+    # up to the callback, not necessarily the amount of this individual deposit.
+    amount_raw = q.get("deposit_amount", "0") if event_type == "deposit" else "0"
+    try:
+        amount = float(amount_raw or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="Invalid deposit_amount.")
+    if not math.isfinite(amount) or not (0 <= amount < 1e9):
+        raise web.HTTPBadRequest(text="Invalid deposit_amount.")
+
+    payload = {k: v for k, v in q.items() if k != "key"}
+    with closing(db()) as con:
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown click_id.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "NormAffiliates / La Casino", event_type, event_id,
+                 amount, currency, json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
+
+
+async def terms_page(request):
+    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
+
+async def privacy_page(request):
+    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Политика конфиденциальности</h1><p>Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.</p><p>После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.</p><p>Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram.</p></body></html>", content_type="text/html")
+
+async def health(request):
+    return web.Response(text="ok")
+
+async def campaign_scheduler(bot: Bot):
+    from datetime import datetime, timezone
+    while True:
+        try:
+            with closing(db()) as con:
+                campaigns = con.execute("""SELECT id,body,media_type,media_file_id,button_text,button_url,interval_hours,last_sent_at
+                    FROM campaigns WHERE enabled=1 AND COALESCE(placement,'broadcast')='broadcast' ORDER BY position,id""").fetchall()
+                users = con.execute("SELECT user_id,last_campaign_id FROM users").fetchall()
+                global_row = con.execute("SELECT value FROM app_settings WHERE key='last_campaign_broadcast'").fetchone()
+            global_last = global_row[0] if global_row else ""
+            global_due = True
+            if global_last:
+                try:
+                    stamp = datetime.fromisoformat(global_last.replace("Z","+00:00"))
+                    # Global throttle spaces out broadcasts, but a campaign created
+                    # after the previous broadcast is allowed its first delivery.
+                    global_due = (datetime.now(timezone.utc)-stamp).total_seconds() >= 8*3600
+                    if not global_due:
+                        with closing(db()) as con:
+                            fresh = con.execute(
+                                "SELECT 1 FROM campaigns WHERE enabled=1 AND last_sent_at='' "
+                                "AND datetime(created_at)>datetime(?) LIMIT 1",
+                                (global_last,)
+                            ).fetchone()
+                        global_due = bool(fresh)
+                except Exception:
+                    global_due = True
+            if global_due:
+                last_campaign_by_user = {int(user_id): int(last_id or 0) for user_id,last_id in users}
+                for cid,body,media_type,file_id,button_text,button_url,interval,last_sent in campaigns:
+                    due = not last_sent
+                    if last_sent:
+                        try:
+                            stamp = datetime.fromisoformat(last_sent.replace("Z","+00:00"))
+                            due = (datetime.now(timezone.utc)-stamp).total_seconds() >= int(interval)*3600
+                        except Exception:
+                            due = True
+                    if not due:
+                        continue
+                    # If every recorded user received this same campaign last time,
+                    # skip it without advancing the schedule; try another due campaign.
+                    if len(campaigns) > 1 and users and all(
+                        last_campaign_by_user.get(int(user_id), int(last_id or 0)) == cid
+                        for user_id, last_id in users
+                    ):
+                        continue
+                    markup = None
+                    if button_text and button_url:
+                        base_url = WEBAPP_URL.rsplit("/app", 1)[0].rstrip("/") if WEBAPP_URL else ""
+                        tracked_url = f"{base_url}/go/campaign/{cid}" if base_url else button_url
+                        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=button_text, url=tracked_url)]])
+                    delivered = 0
+                    for user_id,last_campaign_id in users:
+                        if len(campaigns) > 1 and last_campaign_by_user.get(int(user_id), int(last_campaign_id or 0)) == cid:
+                            continue
+                        try:
+                            if media_type == "photo" and file_id:
+                                sent_message = await bot.send_photo(user_id, file_id, caption=body[:1024] or None, reply_markup=markup)
+                            elif media_type == "animation" and file_id:
+                                sent_message = await bot.send_animation(user_id, file_id, caption=body[:1024] or None, reply_markup=markup)
+                            elif media_type == "video" and file_id:
+                                sent_message = await bot.send_video(user_id, file_id, caption=body[:1024] or None, reply_markup=markup)
+                            else:
+                                sent_message = await bot.send_message(user_id, body[:4096], reply_markup=markup)
+                            delivered += 1
+                            with closing(db()) as con:
+                                con.execute("UPDATE users SET last_campaign_id=? WHERE user_id=?", (cid,user_id))
+                                con.execute(
+                                    "INSERT OR REPLACE INTO campaign_sends(campaign_id,user_id,message_id,sent_at) "
+                                    "VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                                    (cid,user_id,sent_message.message_id)
+                                )
+                                con.execute(
+                                    "INSERT INTO campaign_delivery_messages(campaign_id,user_id,message_id,sent_at) "
+                                    "VALUES(?,?,?,CURRENT_TIMESTAMP)",
+                                    (cid,user_id,sent_message.message_id)
+                                )
+                                con.commit()
+                            last_campaign_by_user[int(user_id)] = int(cid)
+                        except Exception:
+                            # One blocked user or delivery error must not stop the broadcast.
+                            continue
+                        await asyncio.sleep(0.05)
+                    # Do not consume a campaign's schedule if nobody received it.
+                    if delivered:
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        with closing(db()) as con:
+                            con.execute("UPDATE campaigns SET sent_count=sent_count+?,last_sent_at=? WHERE id=?",
+                                        (delivered,now_iso,cid))
+                            con.execute("INSERT INTO app_settings(key,value) VALUES('last_campaign_broadcast',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                        (now_iso,))
+                            con.commit()
+                        # One campaign per 8-hour window; avoid a burst when several are enabled.
+                        break
+        except Exception as exc:
+            print(f"[campaign-scheduler] Error: {type(exc).__name__}: {exc}", flush=True)
+        await asyncio.sleep(60)
+
+
+async def main():
+    init_db()
+    seed_demo()
+    bot = Bot(TOKEN)
+    app = web.Application()
+    app.router.add_get("/app", mini_app)
+    app.router.add_get("/api/offers", api_offers)
+    app.router.add_get("/api/banners", api_banners)
+    app.router.add_get("/api/tracking-token", api_tracking_token)
+    app.router.add_get("/go/{offer_id}", go_offer)
+    app.router.add_get("/go/dual/{offer_id}/{kind}", go_dual_offer)
+    app.router.add_get("/go/banner/{banner_id}", go_banner)
+    app.router.add_get("/go/campaign/{campaign_id}", go_campaign)
+    app.router.add_post("/postback", partner_postback)
+    app.router.add_get("/postback/tonplay", tonplay_postback)
+    app.router.add_get("/postback/vavada", vavada_postback)
+    app.router.add_get("/postback/vodka", vodka_postback)
+    app.router.add_get("/postback/sykaaa/{event_type}", sykaaa_postback)
+    app.router.add_get("/postback/1win/{event_type}", one_win_postback)
+    app.router.add_get("/postback/mellstroy/{event_type}", mellstroy_postback)
+    app.router.add_get("/postback/norm/lacasino/{event_type}", norm_lacasino_postback)
+    app.router.add_get("/terms", terms_page)
+    app.router.add_get("/privacy", privacy_page)
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "8080"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    scheduler_task = asyncio.create_task(campaign_scheduler(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler_task.cancel()
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+
     """Mellstroy GET S2S callbacks for REG and FTD."""
     q = request.query
     expected_secret = os.getenv("MELLSTROY_POSTBACK_SECRET", "")
