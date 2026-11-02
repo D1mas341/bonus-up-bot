@@ -2897,7 +2897,11 @@ def apply_tracking_macros(target, click_id, user_id=None):
     # the exact click row in our database.
     try:
         parsed = urlparse(target)
-        if (parsed.hostname or "").lower() == "mstr1382.live":
+        hostname = (parsed.hostname or "").lower()
+        # Mellstroy rotates numbered tracking domains (for example,
+        # mstr1382.live and mstr0933.live). Preserve the current host and
+        # replace only the fixed sub2 attribution value.
+        if hostname.startswith("mstr") and hostname.endswith(".live") and hostname[4:-5].isdigit():
             query = parse_qsl(parsed.query, keep_blank_values=True)
             if any(key == "sub2" for key, _ in query):
                 query = [(key, str(click_id) if key == "sub2" else value)
