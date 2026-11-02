@@ -1497,8 +1497,13 @@ async def adm_analytics(call: CallbackQuery):
         """, params).fetchall()
         event_rows = con.execute("""
             SELECT partner,event_type,COUNT(*),COALESCE(SUM(amount),0),currency
-            FROM conversion_events WHERE 1=1""" + date_filter + """
+            FROM conversion_events WHERE partner!='Mellstroy TEST'""" + date_filter + """
             GROUP BY partner,event_type,currency ORDER BY partner,event_type,currency
+        """, params).fetchall()
+        test_rows = con.execute("""
+            SELECT event_type,COUNT(*),COALESCE(SUM(amount),0),currency
+            FROM conversion_events WHERE partner='Mellstroy TEST'""" + date_filter + """
+            GROUP BY event_type,currency ORDER BY event_type,currency
         """, params).fetchall()
         revenue_rows = con.execute("""
             SELECT partner,currency,COALESCE(SUM(amount),0),COUNT(*)
@@ -1525,6 +1530,8 @@ async def adm_analytics(call: CallbackQuery):
     lines.extend([f"• {source}: {count}" for source,count in source_rows] or ["Источники пока не отмечены."])
     lines += ["", "📥 КОНВЕРСИИ ОТ ПАРТНЁРОВ:"]
     lines.extend([f"• {partner} — {event}: {count}; сумма {amount:.2f} {currency}" for partner,event,count,amount,currency in event_rows] or ["Пока нет подтверждённых postback-конверсий."])
+    lines += ["", "🧪 ТЕСТОВЫЕ СОБЫТИЯ (НЕ РЕАЛЬНЫЙ ДОХОД):"]
+    lines.extend([f"• Mellstroy — {event}: {count}; сумма {amount:.2f} {currency}" for event,count,amount,currency in test_rows] or ["Тестовых событий пока нет."])
     lines += ["", "💰 ДОХОД, ЗАНЕСЁННЫЙ ВРУЧНУЮ:"]
     lines.extend([f"• {partner}: {amount:.2f} {currency} ({count} запис.)" for partner,currency,amount,count in revenue_rows] or ["Пока доход не добавлен."])
     lines += ["", "📢 РЕКЛАМНЫЕ ПУБЛИКАЦИИ:"]
@@ -1535,6 +1542,7 @@ async def adm_analytics(call: CallbackQuery):
     kb.button(text="📅 30 дней", callback_data="adm:analytics:30d")
     kb.button(text="📊 Всё время", callback_data="adm:analytics:all")
     kb.button(text="➕ Добавить доход", callback_data="adm:revenue_add")
+    kb.button(text="🧪 Тест FTD Mellstroy — 10 USD", callback_data="adm:mellstroy_test_ftd")
     kb.button(text="📒 История доходов", callback_data="adm:revenue_history")
     kb.button(text="⬅️ Админ-панель", callback_data="adm:home")
     kb.adjust(2, 2, 1, 1, 1)
@@ -1545,6 +1553,41 @@ async def adm_analytics(call: CallbackQuery):
         if "message is not modified" not in str(exc).lower():
             raise
     await call.answer()
+
+
+@dp.callback_query(F.data == "adm:mellstroy_test_ftd")
+async def adm_mellstroy_test_ftd(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    test_id = uuid.uuid4().hex
+    click_id = f"TEST-MELLSTROY-{test_id}"
+    event_id = f"{click_id}:FTD"
+    payload = {
+        "_bonus_up_test": True,
+        "_bonus_up_test_note": "Admin-generated synthetic FTD; not a real partner deposit",
+        "amount": "10",
+        "currency": "USD",
+    }
+    with closing(db()) as con:
+        con.execute(
+            """INSERT INTO conversion_events
+               (click_id,partner,event_type,event_id,amount,currency,payload)
+               VALUES(?,?,?,?,?,?,?)""",
+            (click_id, "Mellstroy TEST", "FTD", event_id, 10.0, "USD",
+             json.dumps(payload, ensure_ascii=False)[:4000])
+        )
+        con.commit()
+    await call.answer("Тест FTD добавлен")
+    await call.message.edit_text(
+        "🧪 ТЕСТ FTD СОЗДАН\n\n"
+        "Партнёр: Mellstroy (тест)\n"
+        "Событие: FTD\n"
+        "Сумма: 10.00 USD\n\n"
+        "Это синтетическая запись для проверки базы и отображения в аналитике. "
+        "Она не пришла от Mellstroy, не является реальным депозитом и исключена из обычных конверсий партнёров.",
+        reply_markup=admin_keyboard()
+    )
 
 
 @dp.callback_query(F.data == "adm:revenue_add")
