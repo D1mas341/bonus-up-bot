@@ -3276,6 +3276,63 @@ async def sykaaa_postback(request):
     return web.json_response({"ok": True, "recorded": True})
 
 
+async def mellstroy_postback(request):
+    """Mellstroy GET S2S callbacks for REG and FTD."""
+    q = request.query
+    expected_secret = os.getenv("MELLSTROY_POSTBACK_SECRET", "")
+    supplied_secret = q.get("key", "")
+    if not expected_secret:
+        raise web.HTTPServiceUnavailable(text="Mellstroy postbacks are not configured.")
+    if not supplied_secret or not hmac.compare_digest(supplied_secret, expected_secret):
+        raise web.HTTPUnauthorized(text="Invalid Mellstroy postback credentials.")
+
+    event_code = str(request.match_info.get("event_type", "")).strip().lower()
+    if event_code not in {"reg", "ftd"}:
+        raise web.HTTPBadRequest(text="Unsupported Mellstroy event type.")
+
+    click_id = str(q.get("sub2", "")).strip()[:128]
+    # Partner-side test requests may contain literal macros; acknowledge them
+    # without recording a synthetic conversion.
+    if click_id.startswith("{") and click_id.endswith("}"):
+        return web.json_response({"ok": True, "test": True, "recorded": False})
+    if not click_id:
+        raise web.HTTPBadRequest(text="Missing Mellstroy sub2 Click ID.")
+
+    event_type = "REG" if event_code == "reg" else "FTD"
+    event_id = f"{click_id}:{event_type}"
+    amount = 0.0
+    if event_code == "ftd":
+        try:
+            amount = float(q.get("amount", ""))
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Missing or invalid FTD amount.")
+        if not math.isfinite(amount) or not (0 <= amount < 1e9):
+            raise web.HTTPBadRequest(text="Invalid FTD amount.")
+
+    # Mellstroy has not supplied a currency macro, so preserve the amount
+    # without falsely assigning EUR or USD. The partner event date is retained
+    # in payload; created_at remains the server receipt timestamp for analytics.
+    payload = {k: v for k, v in q.items() if k != "key"}
+    with closing(db()) as con:
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
+        if not known_click:
+            raise web.HTTPNotFound(text="Unknown BONUS UP click ID.")
+        try:
+            con.execute(
+                """INSERT INTO conversion_events
+                   (click_id,partner,event_type,event_id,amount,currency,payload)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (click_id, "Mellstroy", event_type, event_id, amount, "UNKNOWN",
+                 json.dumps(payload, ensure_ascii=False)[:4000])
+            )
+            con.commit()
+        except sqlite3.IntegrityError:
+            return web.json_response({"ok": True, "duplicate": True})
+    return web.json_response({"ok": True, "recorded": True})
+
+
 async def norm_lacasino_postback(request):
     """NormAffiliates callback for La Casino registration/deposit events."""
     # NormAffiliates' built-in tester may send literal macros rather than
@@ -3481,6 +3538,7 @@ async def main():
     app.router.add_get("/postback/vavada", vavada_postback)
     app.router.add_get("/postback/vodka", vodka_postback)
     app.router.add_get("/postback/sykaaa/{event_type}", sykaaa_postback)
+    app.router.add_get("/postback/mellstroy/{event_type}", mellstroy_postback)
     app.router.add_get("/postback/norm/lacasino/{event_type}", norm_lacasino_postback)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/privacy", privacy_page)
