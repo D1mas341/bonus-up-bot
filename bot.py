@@ -3309,9 +3309,9 @@ async def mellstroy_postback(request):
         if not math.isfinite(amount) or not (0 <= amount < 1e9):
             raise web.HTTPBadRequest(text="Invalid FTD amount.")
 
-    # Mellstroy has not supplied a currency macro, so preserve the amount
-    # without falsely assigning EUR or USD. The partner event date is retained
-    # in payload; created_at remains the server receipt timestamp for analytics.
+    # Lina confirmed that Mellstroy FTD amounts are sent in USD.
+    # The partner event date is retained in payload; created_at remains the
+    # server receipt timestamp for analytics.
     payload = {k: v for k, v in q.items() if k != "key"}
     with closing(db()) as con:
         known_click = con.execute(
@@ -3324,7 +3324,7 @@ async def mellstroy_postback(request):
                 """INSERT INTO conversion_events
                    (click_id,partner,event_type,event_id,amount,currency,payload)
                    VALUES(?,?,?,?,?,?,?)""",
-                (click_id, "Mellstroy", event_type, event_id, amount, "UNKNOWN",
+                (click_id, "Mellstroy", event_type, event_id, amount, "USD",
                  json.dumps(payload, ensure_ascii=False)[:4000])
             )
             con.commit()
