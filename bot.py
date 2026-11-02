@@ -3379,13 +3379,17 @@ async def one_win_postback(request):
 
     amount = 0.0
     if event_code == "ftd":
-        amount_raw = q.get("количество", q.get("amount", ""))
-        try:
-            amount = float(str(amount_raw).replace(",", "."))
-        except (TypeError, ValueError):
-            raise web.HTTPBadRequest(text="Missing or invalid 1win FTD amount.")
-        if not math.isfinite(amount) or not (0 <= amount < 1e9):
-            raise web.HTTPBadRequest(text="Invalid 1win FTD amount.")
+        # Amount is optional: some 1win callback configurations send only
+        # the first-deposit event and click ID. Keep the FTD conversion even
+        # when the partner does not provide an amount; store 0.0 in that case.
+        amount_raw = str(q.get("количество") or q.get("amount") or "").strip()
+        if amount_raw and not (amount_raw.startswith("{") and amount_raw.endswith("}")):
+            try:
+                amount = float(amount_raw.replace(",", "."))
+            except (TypeError, ValueError):
+                raise web.HTTPBadRequest(text="Invalid 1win FTD amount.")
+            if not math.isfinite(amount) or not (0 <= amount < 1e9):
+                raise web.HTTPBadRequest(text="Invalid 1win FTD amount.")
 
     # 1win partner account is displayed in RUB; allow an explicit currency
     # parameter if the partner callback supports and supplies one.
