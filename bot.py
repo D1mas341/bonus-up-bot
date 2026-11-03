@@ -3118,7 +3118,9 @@ async def partner_postback(request):
                  json.dumps(data, ensure_ascii=False)[:4000])
             )
             con.commit()
+            print(f"[lacasino-postback] recorded event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
         except sqlite3.IntegrityError:
+            print(f"[lacasino-postback] duplicate event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
             return web.json_response({"ok": True, "duplicate": True})
     return web.json_response({"ok": True, "recorded": True})
 
@@ -3159,6 +3161,7 @@ async def tonplay_postback(request):
             "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
         ).fetchone()
         if not known_click:
+            print(f"[lacasino-postback] unknown_click event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
             raise web.HTTPNotFound(text="Unknown click_id.")
         try:
             con.execute(
@@ -3592,6 +3595,7 @@ async def norm_lacasino_postback(request):
     if synthetic_test:
         # A tester may send literal macros or omit all values. Acknowledge
         # the probe, but never persist it as a real conversion.
+        print(f"[lacasino-postback] synthetic_test event={request.match_info.get('event_type','')}", flush=True)
         return web.json_response({"ok": True, "test": True, "recorded": False})
     expected_secret = os.getenv("NORM_LACASINO_POSTBACK_SECRET", "")
     supplied_secret = q.get("key", "")
@@ -3613,6 +3617,7 @@ async def norm_lacasino_postback(request):
                    q.get("subid") or "").strip()[:128]
     event_id = str(q.get("event_id") or "").strip()[:160]
     if not click_id:
+        print(f"[lacasino-postback] rejected_missing_click_id event={event_type}", flush=True)
         raise web.HTTPBadRequest(text="Missing BONUS UP click ID (source_id1).")
     if not event_id and event_type == "registration":
         event_id = f"{click_id}:registration"
