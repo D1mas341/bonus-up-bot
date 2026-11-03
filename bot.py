@@ -2980,6 +2980,7 @@ async def go_offer(request):
         raise web.HTTPNotFound(text="Партнёрская ссылка ещё не подключена.")
     target = row[0]
     target = apply_tracking_macros(target, click_id, tracking_user_id(request))
+    print(f"[offer-redirect] offer_id={offer_id} click_id={click_id} target={target}", flush=True)
     raise web.HTTPFound(target)
 
 async def go_dual_offer(request):
