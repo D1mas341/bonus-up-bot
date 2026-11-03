@@ -3186,8 +3186,10 @@ async def vavada_postback(request):
     # is accepted as a fallback because it is the macro shown in the URL editor.
     event_id = str(request.query.get("tid") or request.query.get("event_id") or
                    request.query.get("transaction_id") or request.query.get("player_id") or "").strip()[:160]
-    if not event_id and click_id and event_type == "registration":
-        event_id = f"{click_id}:registration"
+    if not event_id and click_id and event_type in {"registration", "first_deposit"}:
+        # Registration and first deposit are unique conversion milestones per click.
+        # VavadaPart may omit tid for FTD, so use a stable per-click fallback.
+        event_id = f"{click_id}:{event_type}"
 
     currency = str(request.query.get("currency", "EUR")).strip().upper()[:8] or "EUR"
     amount_raw = request.query.get("payout", request.query.get("reward", request.query.get("amount", "0")))
