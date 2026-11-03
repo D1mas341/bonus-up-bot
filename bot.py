@@ -3575,14 +3575,23 @@ async def norm_lacasino_postback(request):
     # real event data. Allow only that synthetic probe through without the
     # shared secret; it is acknowledged below and never recorded as a conversion.
     q = request.query
+    # Do not mistake a real registration callback for a synthetic test just
+    # because optional event_id/deposit_amount macros are omitted. In
+    # particular, source_id1 containing a real BONUS UP click ID must proceed.
+    raw_click_id = str(q.get("source_id1") or q.get("source_id2") or
+                       q.get("source_id3") or q.get("source_id4") or
+                       q.get("source_id5") or q.get("click_id") or
+                       q.get("subid") or "").strip()
     synthetic_test = (
-        q.get("source_id1", "{source_id1}") in ("", "{source_id1}")
-        and q.get("event_id", "{event_id}") in ("", "{event_id}")
-        and q.get("deposit_amount", "{deposit_amount}") in ("", "{deposit_amount}")
+        raw_click_id in ("{source_id1}", "{source_id2}", "{source_id3}",
+                         "{source_id4}", "{source_id5}", "{click_id}", "{subid}")
+        or (not raw_click_id and
+            all(not q.get(k) or q.get(k) == "{" + k + "}"
+                for k in ("source_id1", "event_id", "deposit_amount")))
     )
     if synthetic_test:
-        # A tester may omit macro values entirely. Acknowledge this probe
-        # before auth/validation and never persist it as a real conversion.
+        # A tester may send literal macros or omit all values. Acknowledge
+        # the probe, but never persist it as a real conversion.
         return web.json_response({"ok": True, "test": True, "recorded": False})
     expected_secret = os.getenv("NORM_LACASINO_POSTBACK_SECRET", "")
     supplied_secret = q.get("key", "")
