@@ -2934,6 +2934,23 @@ def apply_tracking_macros(target, click_id, user_id=None):
     target = (target.replace("{click_id}", str(click_id))
                     .replace("{clickid}", str(click_id))
                     .replace("{uid}", str(user_id or "")))
+    # La Casino confirmed that its inbound click-ID parameter is anid
+    # (not source_id1). Keep this rewrite isolated to its affiliate redirect
+    # host; the partner's outgoing postback still returns the ID as source_id1.
+    try:
+        parsed = urlparse(target)
+        hostname = (parsed.hostname or "").lower()
+        if hostname == "lunar-haze.com" or hostname.endswith(".lunar-haze.com"):
+            query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                     if key.lower() not in {"anid", "source_id1"}]
+            query.append(("anid", str(click_id)))
+            target = urlunparse(parsed._replace(
+                query=urlencode(query),
+                fragment="",
+            ))
+    except (TypeError, ValueError):
+        pass
+
     # Mellstroy supplied gkeifg.com as the current partner URL. Old mstr*.live
     # links saved in banners/offers must be migrated at redirect time so that
     # every click uses the current domain and the partner's required sub2 macro.
