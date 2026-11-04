@@ -2951,6 +2951,19 @@ def apply_tracking_macros(target, click_id, user_id=None):
     except (TypeError, ValueError):
         pass
 
+    # Vodka Money confirms click_id as its inbound tracking parameter.
+    # Add it only to the confirmed Vodka Money affiliate host.
+    try:
+        parsed = urlparse(target)
+        hostname = (parsed.hostname or "").lower()
+        if hostname == "vodka200032.com" or hostname.endswith(".vodka200032.com"):
+            query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                     if key.lower() != "click_id"]
+            query.append(("click_id", str(click_id)[:100]))
+            target = urlunparse(parsed._replace(query=urlencode(query), fragment=""))
+    except (TypeError, ValueError):
+        pass
+
     # Mellstroy supplied gkeifg.com as the current partner URL. Old mstr*.live
     # links saved in banners/offers must be migrated at redirect time so that
     # every click uses the current domain and the partner's required sub2 macro.
@@ -3243,7 +3256,7 @@ async def vavada_postback(request):
 
 
 async def vodka_postback(request):
-    """Vodka Money HTTP GET postback; validates the documented X-Signature."""
+    """Vodka Money Binom-mode GET postback with X-Signature validation."""
     expected_secret = os.getenv("VODKA_POSTBACK_SECRET", "")
     if not expected_secret:
         raise web.HTTPServiceUnavailable(text="Vodka Money postback signature is not configured.")
@@ -3251,61 +3264,75 @@ async def vodka_postback(request):
     signature = str(request.headers.get("X-Signature", "")).strip().lower()
     if signature.startswith("md5="):
         signature = signature[4:]
-    # Vodka Money's guide specifies MD5(full_url + secret) in X-Signature.
-    full_url = f"{request.scheme}://{request.host}{request.raw_path}"
+
+    # Railway terminates TLS before forwarding the request to aiohttp.
+    # Reconstruct the public URL using the forwarded scheme and raw request
+    # target so percent-encoding and query ordering are preserved.
+    forwarded_proto = str(request.headers.get("X-Forwarded-Proto", "")).split(",")[0].strip()
+    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else request.scheme
+    forwarded_host = str(request.headers.get("X-Forwarded-Host", "")).split(",")[0].strip()
+    host = forwarded_host or request.host
+    full_url = f"{scheme}://{host}{request.raw_path}"
     expected_signature = hashlib.md5((full_url + expected_secret).encode("utf-8")).hexdigest()
     if not signature or not hmac.compare_digest(signature, expected_signature):
+        print("[vodka-postback] rejected: invalid signature", flush=True)
         raise web.HTTPUnauthorized(text="Invalid Vodka Money signature.")
 
     q = request.query
-    click_id = str(q.get("click_id") or q.get("subid") or q.get("sub_id") or
-                   q.get("aff_sub") or q.get("subid1") or q.get("clickid") or "").strip()[:128]
-    raw_event = str(q.get("type") or q.get("event") or q.get("status") or "conversion").strip().lower()[:80]
-    aliases = {
-        "click": "click",
-        "reg": "registration", "register": "registration", "registration": "registration",
-        "signup": "registration", "sign_up": "registration",
-        "fd": "first_deposit", "ftd": "first_deposit", "first deposit": "first_deposit",
+    # Binom tracker mode sends cnv_id/cnv_status, not click_id/type.
+    click_id = str(q.get("cnv_id") or q.get("click_id") or q.get("subid") or
+                   q.get("sub_id") or q.get("aff_sub") or q.get("subid1") or
+                   q.get("clickid") or "").strip()[:100]
+    status = str(q.get("cnv_status") or q.get("type") or q.get("event") or
+                 q.get("status") or "").strip().lower()
+    status_map = {
+        "lead": "registration", "reg": "registration", "register": "registration",
+        "registration": "registration",
+        "sale": "first_deposit", "fd": "first_deposit", "ftd": "first_deposit",
         "first_deposit": "first_deposit", "first-deposit": "first_deposit",
-        "any_second_deposit": "any_second_deposit", "second_deposit": "any_second_deposit",
         "deposit": "deposit", "pd": "deposit",
     }
-    event_type = aliases.get(raw_event, raw_event or "conversion")
-    # Clicks are already counted when the user leaves BONUS UP; acknowledge but
-    # do not create a conversion record for a duplicate network-side click event.
-    if event_type == "click":
-        return web.json_response({"ok": True, "ignored": "click event tracked on outbound redirect"})
+    event_type = status_map.get(status)
+    if not event_type:
+        raise web.HTTPBadRequest(text="Unsupported or missing cnv_status.")
 
-    event_id = str(q.get("transaction_id") or q.get("transaction") or q.get("tx_id") or
-                   q.get("event_id") or q.get("id") or "").strip()[:160]
-    if not event_id and click_id and event_type in {"registration", "first_deposit"}:
+    event_id = str(q.get("id") or q.get("event_id") or q.get("transaction_id") or
+                   q.get("transaction") or q.get("tx_id") or "").strip()[:160]
+    if not event_id and event_type in {"registration", "first_deposit"} and click_id:
         event_id = f"{click_id}:{event_type}"
-    amount_raw = q.get("usd_amount", q.get("amount", "0"))
+
+    amount_raw = q.get("payout", q.get("usd_amount", q.get("amount", "0")))
     try:
         amount = float(amount_raw or 0)
     except (TypeError, ValueError):
-        raise web.HTTPBadRequest(text="Invalid usd_amount.")
+        raise web.HTTPBadRequest(text="Invalid payout amount.")
+    currency = str(q.get("cnv_currency") or "usd").strip().upper()[:8] or "USD"
+
     if not click_id or not event_id:
-        raise web.HTTPBadRequest(text="A tracked click ID and event ID are required.")
+        raise web.HTTPBadRequest(text="cnv_id and unique event id are required.")
     if not math.isfinite(amount) or not (-1e9 < amount < 1e9):
-        raise web.HTTPBadRequest(text="Invalid usd_amount.")
+        raise web.HTTPBadRequest(text="Invalid payout amount.")
 
     payload = {k: v for k, v in q.items()}
     with closing(db()) as con:
-        known_click = con.execute("SELECT click_id FROM clicks WHERE click_id=?", (click_id,)).fetchone()
+        known_click = con.execute(
+            "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
+        ).fetchone()
         if not known_click:
+            print(f"[vodka-postback] unknown click_id suffix={click_id[-8:]}", flush=True)
             raise web.HTTPNotFound(text="Unknown click_id.")
         try:
             con.execute(
                 """INSERT INTO conversion_events
                    (click_id,partner,event_type,event_id,amount,currency,payload)
                    VALUES(?,?,?,?,?,?,?)""",
-                (click_id, "Vodka Money", event_type, event_id, amount, "USD",
+                (click_id, "Vodka Money", event_type, event_id, amount, currency,
                  json.dumps(payload, ensure_ascii=False)[:4000])
             )
             con.commit()
         except sqlite3.IntegrityError:
             return web.json_response({"ok": True, "duplicate": True})
+    print(f"[vodka-postback] recorded event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
     return web.json_response({"ok": True, "recorded": True})
 
 
