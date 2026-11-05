@@ -3529,7 +3529,7 @@ async def mellstroy_postback(request):
 
 
 async def sevenk_postback(request):
-    """7K Casino S2S callbacks: separate registration and first-deposit URLs."""
+    """7K S2S callbacks. Event is selected by the endpoint path in the 7K panel."""
     q = request.query
     expected_secret = os.getenv("SEVENK_POSTBACK_SECRET", "")
     supplied_secret = q.get("key", "")
@@ -3541,11 +3541,20 @@ async def sevenk_postback(request):
         raise web.HTTPUnauthorized(text="Invalid 7K postback credentials.")
 
     event_code = str(request.match_info.get("event_type", "")).strip().lower()
-    if event_code not in {"registration", "ftd"}:
+    event_map = {
+        "registration": "REG", "reg": "REG",
+        "ftd": "FTD", "first_deposit": "FTD", "first-deposit": "FTD",
+        "repeat_deposit": "REPEAT_DEPOSIT", "repeat-deposit": "REPEAT_DEPOSIT",
+        "lead_hold": "LEAD_HOLD", "lead-hold": "LEAD_HOLD",
+        "lead_approve": "LEAD_APPROVE", "lead-approve": "LEAD_APPROVE",
+        "lead_reject": "LEAD_REJECT", "lead-reject": "LEAD_REJECT",
+        "revshare_income": "REVSHARE_INCOME", "revshare-income": "REVSHARE_INCOME",
+    }
+    event_type = event_map.get(event_code)
+    if not event_type:
         raise web.HTTPBadRequest(text="Unsupported 7K event type.")
 
-    # The partner confirmed that its outgoing callback can carry click_id.
-    # Accept common aliases as a compatibility fallback.
+    # 7K's documented outgoing macro is CLICK_ID. Keep aliases for older setups.
     click_id = str(
         q.get("click_id") or q.get("clickid") or q.get("subid") or
         q.get("sub_id") or q.get("source_id1") or ""
@@ -3555,29 +3564,43 @@ async def sevenk_postback(request):
     if not click_id:
         raise web.HTTPBadRequest(text="Missing 7K click_id.")
 
-    event_type = "REG" if event_code == "registration" else "FTD"
+    # POSTBACK_ID is 7K's documented unique callback identifier (their example uses tid).
     event_id = str(
-        q.get("event_id") or q.get("transaction_id") or q.get("transactionid") or
-        q.get("tid") or q.get("txid") or ""
+        q.get("event_id") or q.get("postback_id") or q.get("transaction_id") or
+        q.get("transactionid") or q.get("tid") or q.get("txid") or ""
     ).strip()[:160]
     if not event_id or (event_id.startswith("{") and event_id.endswith("}")):
-        event_id = f"{click_id}:{event_type}"
+        # Stable fallback prevents duplicate callbacks with identical payloads being counted twice.
+        fingerprint = hashlib.sha256(
+            json.dumps({k: v for k, v in q.items() if k != "key"},
+                       sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:24]
+        event_id = f"{click_id}:{event_type}:{fingerprint}"
 
+    # Do not treat CPA_AMOUNT as a deposit amount. It is documented by 7K as
+    # CPA commission, not player deposit value. Store 0 when no explicit
+    # deposit/revenue amount field is supplied; retain all raw macros in payload.
     amount = 0.0
-    if event_code == "ftd":
-        amount_raw = str(
-            q.get("amount") or q.get("deposit_amount") or q.get("sum") or "0"
-        ).strip()
-        if amount_raw and not (amount_raw.startswith("{") and amount_raw.endswith("}")):
-            try:
-                amount = float(amount_raw.replace(",", "."))
-            except (TypeError, ValueError):
-                raise web.HTTPBadRequest(text="Invalid 7K FTD amount.")
-            if not math.isfinite(amount) or not (0 <= amount < 1e9):
-                raise web.HTTPBadRequest(text="Invalid 7K FTD amount.")
+    amount_raw = str(
+        q.get("amount") or q.get("deposit_amount") or q.get("sum") or
+        q.get("revenue_amount") or q.get("income_amount") or ""
+    ).strip()
+    if amount_raw and not (amount_raw.startswith("{") and amount_raw.endswith("}")):
+        try:
+            amount = float(amount_raw.replace(",", "."))
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Invalid 7K event amount.")
+        if not math.isfinite(amount) or not (0 <= amount < 1e9):
+            raise web.HTTPBadRequest(text="Invalid 7K event amount.")
 
-    currency = str(q.get("currency") or q.get("player_currency") or "EUR").strip().upper()[:8] or "EUR"
+    currency = str(
+        q.get("currency") or q.get("player_currency") or "EUR"
+    ).strip().upper()[:8] or "EUR"
     payload = {k: v for k, v in q.items() if k != "key"}
+    payload["_7k_event_code"] = event_code
+    payload["_bonus_up_amount_semantics"] = (
+        "explicit deposit/revenue amount only; CPA_AMOUNT is not assumed to be deposit"
+    )
     with closing(db()) as con:
         known_click = con.execute(
             "SELECT click_id FROM clicks WHERE click_id=?", (click_id,)
@@ -3596,7 +3619,10 @@ async def sevenk_postback(request):
             return web.json_response({"ok": True, "duplicate": True})
     if not known_click:
         print(f"[7k-postback] stored_unattributed event={event_type} click_id_suffix={click_id[-8:]}", flush=True)
-    return web.json_response({"ok": True, "recorded": True, "attributed": bool(known_click)})
+    return web.json_response({
+        "ok": True, "recorded": True, "attributed": bool(known_click),
+        "event": event_type
+    })
 
 
 async def norm_lacasino_postback(request):
