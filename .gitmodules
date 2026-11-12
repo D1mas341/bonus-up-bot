@@ -1,0 +1,9 @@
+[submodule ".agents/skill-sources/impeccable"]
+	path = .agents/skill-sources/impeccable
+	url = https://github.com/pbakaus/impeccable.git
+[submodule ".agents/skill-sources/taste-skill"]
+	path = .agents/skill-sources/taste-skill
+	url = https://github.com/Leonxlnx/taste-skill.git
+[submodule ".agents/skill-sources/emilkowalski-skills"]
+	path = .agents/skill-sources/emilkowalski-skills
+	url = https://github.com/emilkowalski/skills.git
