@@ -13,6 +13,7 @@ from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, BufferedInputFile, ReplyKeyboardRemove, InputMediaVideo
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
@@ -1745,7 +1746,12 @@ async def adm_clicks(call: CallbackQuery):
     text = "📊 ПЕРЕХОДЫ ПО ПАРТНЁРСКИМ ССЫЛКАМ\n\n"
     text += "\n".join(f"• {name}: {count}" for name, count in rows) or "Пока нет данных."
     text += "\n\nСчитаются переходы через ссылку-редирект BONUS UP. Открытия карточек без перехода здесь не учитываются."
-    await call.message.edit_text(text, reply_markup=admin_keyboard())
+    try:
+        await call.message.edit_text(text, reply_markup=admin_keyboard())
+    except TelegramBadRequest as exc:
+        # Telegram raises this when the requested text and keyboard are unchanged.
+        if "message is not modified" not in str(exc).lower():
+            raise
     await call.answer()
 
 
@@ -2774,7 +2780,7 @@ document.getElementById("createShortcut").addEventListener("click",()=>{if(tg&&t
 document.addEventListener("click",e=>{if(!e.target.closest(".menu-wrap")){topMenu.classList.remove("open");menuButton.setAttribute("aria-expanded","false")}});
 applyLanguage();
 function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
-function logoHtml(x,cls){const name=String(x.name||"?").trim();const initials=name.split(/\s+/).slice(0,2).map(v=>v[0]||"").join("").toUpperCase();const n=name.toLowerCase();const domain=n.includes("1win")?"1win.com":(n.includes("зенит")||n.includes("zenit"))?"zenit.win":"";const url=x.logo_url|| (domain?"https://www.google.com/s2/favicons?domain="+domain+"&sz=128":"");return '<span class="brand-fallback">'+esc(initials)+'</span>'+(url?'<img class="'+(n.includes("1win")?"brand-img-1win":"")+'" src="'+esc(url)+'" alt="'+esc(name)+'" loading="lazy" onerror="this.remove()">':"")}
+function logoHtml(x,cls){const name=String(x.name||"?").trim();const initials=name.split(" ").slice(0,2).map(v=>v[0]||"").join("").toUpperCase();const n=name.toLowerCase();const domain=n.includes("1win")?"1win.com":(n.includes("зенит")||n.includes("zenit"))?"zenit.win":"";const url=x.logo_url|| (domain?"https://www.google.com/s2/favicons?domain="+domain+"&sz=128":"");return '<span class="brand-fallback">'+esc(initials)+'</span>'+(url?'<img class="'+(n.includes("1win")?"brand-img-1win":"")+'" src="'+esc(url)+'" alt="'+esc(name)+'" loading="lazy" onerror="this.remove()">':"")}
 function bonusBadges(value){if(!value)return "";let parts=String(value).split(/\s*(?:\||\+|,|;)\s*/).filter(Boolean);if(parts.length===1){let match=String(value).match(/(\d+\s*FS|FS\s*\d+|\d+\s*%|Up to\s*[\d$€£]+)/ig);if(match&&match.length>1)parts=match}return parts.map((p,i)=>'<span class="bonus '+(/up to/i.test(p)?"alt":"")+'">'+esc(p.trim())+'</span>').join("")}
 function hasPartnerLink(x){try{const u=new URL(String(x.url||""));const h=u.hostname.toLowerCase();return (u.protocol==="https:"||u.protocol==="http:")&&!["example.com","www.example.com","example.org","www.example.org","example.net","www.example.net"].includes(h)&&!h.endsWith(".example.com")&&!h.endsWith(".example.org")&&!h.endsWith(".example.net")}catch(e){return false}}
 function render(cat){currentCat=cat;const box=document.getElementById("offers");const items=all.filter(x=>x.category===cat);const catNames={ru:{casino:"Игры",bets:"Спорт"},en:{casino:"Games",bets:"Sports"},de:{casino:"Spiele",bets:"Sport"},tr:{casino:"Oyunlar",bets:"Spor"},hi:{casino:"गेम",bets:"स्पोर्ट्स"}};document.getElementById("sectionTitle").textContent=(cat==="bets"?"⚽ ":"🎰 ")+((catNames[language]||catNames.ru)[cat]);if(!items.length){box.innerHTML='<div class="empty">'+esc(t("empty"))+'</div>';return}
