@@ -2766,10 +2766,16 @@ MINI_APP_HTML = '''<!doctype html>
  #offers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
  #offers .card{margin:0;height:100%}
  #offers .empty{grid-column:1/-1}
- .cardtop{min-height:102px}
+ /* Wider cards: consistent two-column desktop catalog. */
+ .cardtop{min-height:122px;padding:20px 22px;gap:18px}
+ #offers .icon{width:64px;height:64px;border-radius:16px}
+ #offers .name{font-size:16px;margin-top:10px}
+ #offers .bonus{font-size:12px;padding:7px 11px}
+ #offers .badges{gap:7px}
+ #offers .arrow{width:50px;height:50px;border-radius:15px}
+ #offers .cardbottom{padding:14px 22px;min-height:62px}
  .note{margin-top:36px}
 }
-@media(min-width:1200px){#offers{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:899px){#promoBanner .banner-tile{width:100%}}
 </style></head>
 <body>
