@@ -2917,11 +2917,11 @@ function openDesktopLanguageMenu(){
  const selected=desktopLanguageMenu.querySelector('[aria-checked="true"]');
  if(selected)selected.focus();
 }
-function chooseLanguage(value){
+function chooseLanguage(value,fromDesktop=false){
  language=translations[value]?value:"ru";
  try{localStorage.setItem("bonusUpLanguage",language)}catch(err){}
  applyLanguage();
- closeDesktopLanguageMenu(true);
+ closeDesktopLanguageMenu(fromDesktop);
 }
 document.getElementById("languageSelect").addEventListener("change",e=>chooseLanguage(e.target.value));
 desktopLanguageButton.addEventListener("click",()=>{
@@ -2929,7 +2929,7 @@ desktopLanguageButton.addEventListener("click",()=>{
  else closeDesktopLanguageMenu(false);
 });
 desktopLanguageMenu.querySelectorAll("[data-lang-option]").forEach(item=>{
- item.addEventListener("click",()=>chooseLanguage(item.dataset.langOption));
+ item.addEventListener("click",()=>chooseLanguage(item.dataset.langOption,true));
 });
 desktopLanguageMenu.addEventListener("keydown",e=>{
  if(e.key==="Escape"){e.preventDefault();closeDesktopLanguageMenu(true);return}
