@@ -292,6 +292,8 @@ assert.equal(triggerFocuses,beforeFocus,"mobile language selection must not focu
         self.assertRegex(html, r'<text[^>]*data-i18n="subtitle"')
         self.assertRegex(html, r'<text[^>]*data-i18n="footerLine1"')
         self.assertRegex(html, r'<text[^>]*data-i18n="footerLine2"')
+        self.assertIn('data-i18n-aria-label="footerAria"', html)
+        self.assertIn('el.setAttribute("aria-label",t(el.dataset.i18nAriaLabel))', html)
         self.assertIn('el.setAttribute("href","/terms?lang="+language)', html)
         self.assertIn('el.setAttribute("href","/privacy?lang="+language)', html)
         match = re.search(r"const extraTranslations=(\{[^\n]+\});", html)
@@ -299,7 +301,7 @@ assert.equal(triggerFocuses,beforeFocus,"mobile language selection must not focu
         translated = json.loads(match.group(1))
         self.assertEqual(set(translated), {"ru", "en", "de", "tr", "hi"})
         for locale, entries in translated.items():
-            for key in ("footerLine1", "footerLine2", "riskNote"):
+            for key in ("footerLine1", "footerLine2", "riskNote", "footerAria"):
                 self.assertTrue(entries[key].strip(), (locale, key))
             if locale != "ru":
                 self.assertNotEqual(entries["footerLine1"], translated["ru"]["footerLine1"])
