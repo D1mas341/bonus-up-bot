@@ -63,15 +63,18 @@ class MiniAppDesktopLayoutTests(unittest.TestCase):
         ):
             self.assertIn(required, html)
 
-    def test_desktop_auto_request_and_mobile_suppression(self):
+    def test_desktop_fullscreen_toggle_and_mobile_suppression(self):
         html = self.html
         self.assertIn('id="expandMiniApp"', html)
         self.assertIn('desktopExpand.addEventListener("click"', html)
         self.assertIn('window.requestAnimationFrame(()=>requestDesktopFullscreen(false))', html)
-        self.assertIn('if(!tg)return false', html)
         self.assertIn('platform==="tdesktop"||platform==="macos"', html)
         self.assertIn('@media(max-width:899px) and (pointer:coarse)', html)
-        self.assertIn('tg.isFullscreen', html)
+        self.assertIn('tg.onEvent("fullscreenChanged"', html)
+        self.assertIn('tg.onEvent("fullscreenFailed"', html)
+        self.assertIn('tg.exitFullscreen()', html)
+        self.assertIn('.tg-desktop .menu-wrap{display:none!important}', html)
+        self.assertIn('class="lang-select" id="languageSelect"', html)
 
         if not shutil.which("node"):
             self.skipTest("Node.js not installed")
@@ -95,14 +98,22 @@ const cases = [
  {platform:"web",width:450,coarse:false,expected:0,visible:false},
 ];
 for (const c of cases){
- let calls=0, ready=0, expand=0;
- const callbacks={};
- const button={hidden:true,addEventListener:(ev,cb)=>{callbacks[ev]=cb}};
+ let requests=0, exits=0, ready=0, expand=0;
+ const callbacks={}, events={}, alerts=[];
+ const classes=[];
+ const button={
+   hidden:true,
+   addEventListener:(ev,cb)=>{callbacks[ev]=cb},
+   setAttribute:(key,value)=>{button[key]=value}
+ };
  const tg={
   platform:c.platform,initData:"verified-launch",isFullscreen:false,
   ready:()=>ready++,expand:()=>expand++,
-  isVersionAtLeast:v=>true,
-  requestFullscreen:()=>calls++,showAlert:()=>{}
+  isVersionAtLeast:()=>true,
+  requestFullscreen:()=>requests++,
+  exitFullscreen:()=>exits++,
+  showAlert:(message)=>alerts.push(message),
+  onEvent:(name,cb)=>events[name]=cb
  };
  const window={
   Telegram:{WebApp:tg},
@@ -111,13 +122,48 @@ for (const c of cases){
   matchMedia:()=>({matches:c.coarse}),
   requestAnimationFrame:cb=>cb()
  };
- const document={getElementById:()=>button};
- vm.runInNewContext(source,{window,document}, {timeout:1000});
+ const document={
+   documentElement:{classList:{add:(name)=>classes.push(name)}},
+   getElementById:()=>button
+ };
+ vm.runInNewContext(source,{window,document},{timeout:1000});
  assert.equal(ready,1,c.platform+" ready");
  assert.equal(expand,1,c.platform+" expand");
- assert.equal(calls,c.expected,c.platform+" auto fullscreen");
+ assert.equal(requests,c.expected,c.platform+" auto fullscreen");
  assert.equal(button.hidden,!c.visible,c.platform+" fallback button");
- if(c.visible){callbacks.click();assert.equal(calls,c.expected+1,c.platform+" manual fallback");}
+ if(c.visible){
+  assert.equal(button.textContent,"⛶",c.platform+" initial button label");
+  assert(classes.includes("tg-desktop"));
+  callbacks.click();
+  assert.equal(requests,c.expected+1,c.platform+" manual expand");
+  tg.isFullscreen=true;
+  events.fullscreenChanged();
+  assert.equal(button.textContent,"↙",c.platform+" full button label");
+  callbacks.click();
+  assert.equal(exits,1,c.platform+" click must EXIT when fullscreen");
+  tg.isFullscreen=false;
+  events.fullscreenChanged();
+  assert.equal(button.textContent,"⛶",c.platform+" restored button label");
+  callbacks.click();
+  events.fullscreenFailed({error:"UNSUPPORTED"});
+  assert(alerts.some(s=>s.includes("не поддерживается")),c.platform+" failure feedback");
+ }else{
+  assert(!classes.includes("tg-desktop"));
+ }
+}
+{
+ const alerts=[],callbacks={},events={};
+ const button={hidden:true,addEventListener:(e,cb)=>callbacks[e]=cb,setAttribute:()=>{}};
+ const tg={
+  platform:"tdesktop",initData:"verified-launch",isFullscreen:false,
+  ready:()=>{},expand:()=>{},showAlert:m=>alerts.push(m),
+  isVersionAtLeast:()=>true,onEvent:(n,cb)=>events[n]=cb
+ };
+ const window={Telegram:{WebApp:tg},requestAnimationFrame:cb=>cb()};
+ const document={getElementById:()=>button,documentElement:{classList:{add:()=>{}}}};
+ vm.runInNewContext(source,{window,document},{timeout:1000});
+ callbacks.click();
+ assert(alerts.length>0,"unsupported version must explain why fullscreen is unavailable");
 }
 """
         run = subprocess.run(
