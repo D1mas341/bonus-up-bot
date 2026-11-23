@@ -2748,6 +2748,7 @@ MINI_APP_HTML = '''<!doctype html>
 /* Desktop-only layout; default mobile styles are retained. */
 .desktop-expand{width:34px;height:34px;flex:none;border:1px solid #57451d;border-radius:10px;background:#17140d;color:#ffe58a;font:700 22px Arial;cursor:pointer}
 .desktop-expand[hidden]{display:none}
+@media(max-width:899px) and (pointer:coarse){.desktop-expand{display:none!important}}
 .desktop-expand:focus-visible{outline:2px solid #ffe58a;outline-offset:3px}
 .banner-tile{min-width:0;position:relative}
 @media (min-width:900px){
@@ -2784,16 +2785,34 @@ MINI_APP_HTML = '''<!doctype html>
 <script>
 const tg=window.Telegram&&window.Telegram.WebApp;if(tg){tg.ready();tg.expand()}
 
-/* On-demand fullscreen. Telegram controls the actual window width. */
+/* Auto-expand only on desktop Telegram. The Telegram client controls actual window size. */
 const desktopExpand=document.getElementById("expandMiniApp");
-if(desktopExpand&&tg&&tg.initData&&/^(tdesktop|macos|web|weba|webk)$/i.test(String(tg.platform||""))){
+const telegramDesktop=(()=>{
+ if(!tg)return false;
+ const platform=String(tg.platform||"").toLowerCase();
+ if(platform==="tdesktop"||platform==="macos")return true;
+ if(!["web","weba","webk"].includes(platform)||!tg.initData)return false;
+ const touch=window.matchMedia("(pointer:coarse)").matches;
+ const physicalWidth=window.screen&&window.screen.width?window.screen.width:window.innerWidth;
+ return !touch&&physicalWidth>=900;
+})();
+if(desktopExpand&&telegramDesktop){
  desktopExpand.hidden=false;
- desktopExpand.addEventListener("click",()=>{
-  try{
-   if(typeof tg.requestFullscreen==="function"&&(!tg.isVersionAtLeast||tg.isVersionAtLeast("8.0")))tg.requestFullscreen();
-   else if(typeof tg.showAlert==="function")tg.showAlert("Полноэкранный режим не поддерживается. Обновите Telegram или откройте каталог в браузере.");
-  }catch(e){if(typeof tg.showAlert==="function")tg.showAlert("Не удалось развернуть окно. Попробуйте обновить Telegram.");}
- });
+ const canFullscreen=typeof tg.requestFullscreen==="function"&&(!tg.isVersionAtLeast||tg.isVersionAtLeast("8.0"));
+ function requestDesktopFullscreen(manual){
+  if(!canFullscreen){
+   if(manual&&typeof tg.showAlert==="function")tg.showAlert("Полноэкранный режим не поддерживается. Обновите Telegram или откройте каталог в браузере.");
+   return;
+  }
+  if(tg.isFullscreen)return;
+  try{tg.requestFullscreen()}catch(e){
+   if(manual&&typeof tg.showAlert==="function")tg.showAlert("Не удалось развернуть окно. Попробуйте обновить Telegram.");
+  }
+ }
+ desktopExpand.addEventListener("click",()=>requestDesktopFullscreen(true));
+ if(canFullscreen&&!tg.isFullscreen){
+  window.requestAnimationFrame(()=>requestDesktopFullscreen(false));
+ }
 }
 
 const translations={
