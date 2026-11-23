@@ -2748,6 +2748,7 @@ MINI_APP_HTML = '''<!doctype html>
 /* Desktop-only layout; default mobile styles are retained. */
 .desktop-expand{width:34px;height:34px;flex:none;border:1px solid #57451d;border-radius:10px;background:#17140d;color:#ffe58a;font:700 22px Arial;cursor:pointer}
 .desktop-expand[hidden]{display:none}
+.tg-desktop .menu-wrap{display:none!important}/* Native Telegram ⋮ already provides the desktop menu. */
 @media(max-width:899px) and (pointer:coarse){.desktop-expand{display:none!important}}
 .desktop-expand:focus-visible{outline:2px solid #ffe58a;outline-offset:3px}
 .banner-tile{min-width:0;position:relative}
@@ -2791,7 +2792,7 @@ MINI_APP_HTML = '''<!doctype html>
 <script>
 const tg=window.Telegram&&window.Telegram.WebApp;if(tg){tg.ready();tg.expand()}
 
-/* Auto-expand only on desktop Telegram. The Telegram client controls actual window size. */
+/* Telegram Desktop fullscreen: explicit toggle with native status feedback. */
 const desktopExpand=document.getElementById("expandMiniApp");
 const telegramDesktop=(()=>{
  if(!tg)return false;
@@ -2803,18 +2804,58 @@ const telegramDesktop=(()=>{
  return !touch&&physicalWidth>=900;
 })();
 if(desktopExpand&&telegramDesktop){
+ document.documentElement.classList.add("tg-desktop");
  desktopExpand.hidden=false;
  const canFullscreen=typeof tg.requestFullscreen==="function"&&(!tg.isVersionAtLeast||tg.isVersionAtLeast("8.0"));
+ let manualFullscreenRequest=false;
+ function showFullscreenMessage(message){
+  if(typeof tg.showAlert==="function")tg.showAlert(message);
+  else if(typeof window.alert==="function")window.alert(message);
+ }
+ function updateFullscreenButton(){
+  const full=Boolean(tg.isFullscreen);
+  desktopExpand.textContent=full?"↙":"⛶";
+  const label=full?"Вернуться в обычное окно Telegram":"Развернуть окно Telegram";
+  desktopExpand.title=label;
+  desktopExpand.setAttribute("aria-label",label);
+ }
  function requestDesktopFullscreen(manual){
   if(!canFullscreen){
-   if(manual&&typeof tg.showAlert==="function")tg.showAlert("Полноэкранный режим не поддерживается. Обновите Telegram или откройте каталог в браузере.");
+   if(manual)showFullscreenMessage("В этой версии Telegram полноэкранный режим не поддерживается. Попробуйте обновить Telegram.");
    return;
   }
-  if(tg.isFullscreen)return;
-  try{tg.requestFullscreen()}catch(e){
-   if(manual&&typeof tg.showAlert==="function")tg.showAlert("Не удалось развернуть окно. Попробуйте обновить Telegram.");
+  if(tg.isFullscreen){
+   if(!manual)return;
+   if(typeof tg.exitFullscreen!=="function"){
+    showFullscreenMessage("Ваш Telegram не поддерживает возврат из полноэкранного режима.");
+    return;
+   }
+   manualFullscreenRequest=true;
+   try{tg.exitFullscreen()}catch(e){manualFullscreenRequest=false;showFullscreenMessage("Telegram не смог изменить размер окна.");}
+  }else{
+   manualFullscreenRequest=manual;
+   try{tg.requestFullscreen()}catch(e){
+    manualFullscreenRequest=false;
+    if(manual)showFullscreenMessage("Telegram не смог развернуть окно. Проверьте версию приложения.");
+   }
   }
  }
+ if(typeof tg.onEvent==="function"){
+  tg.onEvent("fullscreenChanged",()=>{
+   manualFullscreenRequest=false;
+   updateFullscreenButton();
+  });
+  tg.onEvent("fullscreenFailed",event=>{
+   const showError=manualFullscreenRequest;
+   manualFullscreenRequest=false;
+   updateFullscreenButton();
+   if(showError){
+    const unsupported=event&&event.error==="UNSUPPORTED";
+    showFullscreenMessage(unsupported?"В этом клиенте Telegram полноэкранный режим не поддерживается.":"Не удалось изменить размер окна Telegram.");
+   }
+  });
+ }
+ updateFullscreenButton();
  desktopExpand.addEventListener("click",()=>requestDesktopFullscreen(true));
  if(canFullscreen&&!tg.isFullscreen){
   window.requestAnimationFrame(()=>requestDesktopFullscreen(false));
