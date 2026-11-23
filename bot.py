@@ -3911,11 +3911,108 @@ async def norm_lacasino_postback(request):
     return web.json_response({"ok": True, "recorded": True})
 
 
+
+# Terms and privacy are shown in the current Mini App language (link: ?lang=...).
+LEGAL_PAGE_TRANSLATIONS = {
+    "terms": {
+        "ru": [
+            "Условия использования",
+            "BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.",
+            "Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.",
+            "Только 18+."
+        ],
+        "en": [
+            "Terms of use",
+            "BONUS UP is a catalogue of partner offers. We do not accept bets, conduct gambling activities, or operate the websites of gambling operators.",
+            "Information may change. Check the current terms, age restrictions, availability in your country, and the operator’s rules.",
+            "For ages 18+ only."
+        ],
+        "de": [
+            "Nutzungsbedingungen",
+            "BONUS UP ist ein Katalog von Partnerangeboten. Wir nehmen keine Wetten an, veranstalten keine Glücksspiele und betreiben keine Websites der Anbieter.",
+            "Informationen können sich ändern. Prüfen Sie die aktuellen Bedingungen, Altersbeschränkungen, die Verfügbarkeit in Ihrem Land und die Regeln des jeweiligen Anbieters.",
+            "Nur ab 18 Jahren."
+        ],
+        "tr": [
+            "Kullanım koşulları",
+            "BONUS UP, iş ortağı tekliflerini listeleyen bir katalogdur. Bahis kabul etmiyor, kumar oyunları düzenlemiyor ve operatörlerin web sitelerini yönetmiyoruz.",
+            "Bilgiler değişebilir. Güncel koşulları, yaş sınırlarını, ülkenizdeki hizmet kullanılabilirliğini ve operatörün kurallarını kontrol edin.",
+            "Yalnızca 18 yaş ve üzeri."
+        ],
+        "hi": [
+            "उपयोग की शर्तें",
+            "BONUS UP साझेदार ऑफ़र की एक सूची है। हम दाँव स्वीकार नहीं करते, जुए का संचालन नहीं करते और ऑपरेटरों की वेबसाइट नहीं चलाते।",
+            "जानकारी बदल सकती है। मौजूदा शर्तें, आयु सीमा, अपने देश में सेवाओं की उपलब्धता और ऑपरेटर के नियम जाँचें।",
+            "केवल 18 वर्ष या उससे अधिक उम्र के लिए।"
+        ]
+    },
+    "privacy": {
+        "ru": [
+            "Политика конфиденциальности",
+            "Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.",
+            "После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.",
+            "Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram."
+        ],
+        "en": [
+            "Privacy policy",
+            "The bot may store your Telegram ID, username, profile name, launch source, and technical statistics about offer clicks to operate the service and support analytics.",
+            "After you visit a partner website, your data is processed under that operator’s policies.",
+            "To request deletion of your data, contact a BONUS UP administrator via Telegram."
+        ],
+        "de": [
+            "Datenschutzerklärung",
+            "Der Bot kann Ihre Telegram-ID, Ihren Benutzernamen, Ihren Profilnamen, die Startquelle und technische Statistiken zu Angebotsklicks speichern, um den Dienst zu betreiben und auszuwerten.",
+            "Nach dem Besuch einer Partnerwebsite gelten für die Verarbeitung Ihrer Daten die Richtlinien des jeweiligen Anbieters.",
+            "Um die Löschung Ihrer Daten zu beantragen, kontaktieren Sie einen BONUS UP-Administrator über Telegram."
+        ],
+        "tr": [
+            "Gizlilik politikası",
+            "Bot, hizmetin işleyişi ve analiz için Telegram kimliğinizi, kullanıcı adınızı, profil adınızı, açılış kaynağınızı ve teklif bağlantılarına tıklama istatistiklerini saklayabilir.",
+            "Bir iş ortağının web sitesine geçtiğinizde verileriniz ilgili operatörün politikalarına göre işlenir.",
+            "Verilerinizin silinmesini talep etmek için Telegram üzerinden BONUS UP yöneticisiyle iletişime geçin."
+        ],
+        "hi": [
+            "गोपनीयता नीति",
+            "सेवा चलाने और विश्लेषण के लिए बॉट आपका Telegram ID, उपयोगकर्ता नाम, प्रोफ़ाइल नाम, प्रवेश स्रोत और ऑफ़र लिंक पर क्लिक के तकनीकी आँकड़े संग्रहीत कर सकता है।",
+            "किसी साझेदार वेबसाइट पर जाने के बाद आपके डेटा का प्रबंधन उस ऑपरेटर की नीतियों के अनुसार होता है।",
+            "डेटा हटाने का अनुरोध करने के लिए Telegram पर BONUS UP के व्यवस्थापक से संपर्क करें।"
+        ]
+    }
+}
+
+def legal_page_html(page, lang):
+    from html import escape as html_escape
+    translations = LEGAL_PAGE_TRANSLATIONS[page]
+    if lang not in translations:
+        lang = "ru"
+    title, paragraph1, paragraph2, paragraph3 = translations[lang]
+    return (
+        "<!doctype html><html lang='" + lang + "'><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial,sans-serif;padding:24px'>"
+        "<main style='max-width:900px;margin:0 auto'>"
+        "<a style='color:#f4c542' href='/app'>← BONUS UP</a>"
+        "<h1 style='color:#f4c542'>" + html_escape(title) + "</h1>"
+        "<p>" + html_escape(paragraph1) + "</p>"
+        "<p>" + html_escape(paragraph2) + "</p>"
+        "<p>" + html_escape(paragraph3) + "</p></main></body></html>"
+    )
+
 async def terms_page(request):
-    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Условия использования</h1><p>BONUS UP — каталог партнёрских предложений. Мы не принимаем ставки, не проводим азартные игры и не управляем сайтами операторов.</p><p>Информация может меняться. Проверяйте действующие условия, возрастные ограничения, доступность услуг в вашей стране и правила оператора.</p><p>Только 18+.</p></body></html>", content_type="text/html")
+    lang = (request.query.get("lang") or "ru").lower()
+    return web.Response(
+        text=legal_page_html("terms", lang),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store"}
+    )
 
 async def privacy_page(request):
-    return web.Response(text="<html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><body style='background:#090909;color:#fff9ec;font:16px/1.7 Arial;padding:24px'><a style='color:#f4c542' href='/app'>← BONUS UP</a><h1 style='color:#f4c542'>Политика конфиденциальности</h1><p>Бот может хранить Telegram ID, имя пользователя, имя профиля, источник запуска и техническую статистику переходов по предложениям для работы сервиса и аналитики.</p><p>После перехода на партнёрский сайт обработка данных регулируется правилами соответствующего оператора.</p><p>Для запроса об удалении данных свяжитесь с администратором BONUS UP через Telegram.</p></body></html>", content_type="text/html")
+    lang = (request.query.get("lang") or "ru").lower()
+    return web.Response(
+        text=legal_page_html("privacy", lang),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store"}
+    )
 
 async def health(request):
     return web.Response(text="ok")
