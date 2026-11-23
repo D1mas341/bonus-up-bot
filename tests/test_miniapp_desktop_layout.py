@@ -40,8 +40,12 @@ class MiniAppDesktopLayoutTests(unittest.TestCase):
         html = self.html
         self.assertIn("@media (min-width:900px)", html)
         self.assertIn(".wrap{max-width:1320px", html)
-        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", html)
-        self.assertIn("#offers{display:grid", html)
+        # The banner gallery stays three-wide, while desktop offers stay two-wide.
+        self.assertIn("#promoBanner.banner{width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr))", html)
+        self.assertIn("#offers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))", html)
+        self.assertNotIn("#offers{grid-template-columns:repeat(3,minmax(0,1fr))", html)
+        self.assertIn("#offers .icon{width:64px;height:64px", html)
+        self.assertIn("#offers .cardbottom{padding:14px 22px", html)
         self.assertIn(".banner-tile", html)
         self.assertIn("renderTile(items[(idx+i)%items.length])", html)
 
