@@ -172,6 +172,108 @@ for (const c of cases){
         )
         self.assertEqual(run.returncode, 0, run.stderr)
 
+    def test_desktop_language_popover(self):
+        html = self.html
+        self.assertIn('id="desktopLanguageButton"', html)
+        self.assertIn('id="desktopLanguageMenu" role="menu"', html)
+        self.assertIn('.tg-desktop .lang-select{display:none}', html)
+        self.assertIn('.tg-desktop .desktop-language{display:block}', html)
+        self.assertIn('desktop-language-popover[hidden]', html)
+        for code in ("ru", "en", "de", "tr", "hi"):
+            self.assertIn(f'data-lang-option="{code}"', html)
+        self.assertIn('Sprache wählen', html)
+
+        if not shutil.which("node"):
+            self.skipTest("Node.js not installed")
+        match = re.search(
+            r"(const desktopLanguageControl=[\s\S]*?)const menuButton=",
+            html,
+        )
+        self.assertIsNotNone(match)
+        harness = r"""
+const assert=require("assert");
+const vm=require("vm");
+const source=require("fs").readFileSync(0,"utf8");
+let document;
+const makeOption=code=>({
+  dataset:{langOption:code},attributes:{},listeners:{},
+  setAttribute(k,v){this.attributes[k]=v},
+  addEventListener(k,cb){this.listeners[k]=cb},
+  focus(){document.activeElement=this}
+});
+const codes=["en","ru","de","tr","hi"];
+const options=codes.map(makeOption);
+const menu={
+ hidden:true,listeners:{},
+ querySelectorAll:()=>options,
+ querySelector:()=>options.find(o=>o.attributes["aria-checked"]==="true"),
+ addEventListener(k,cb){this.listeners[k]=cb}
+};
+let triggerFocuses=0;
+const trigger={
+ attributes:{},listeners:{},
+ setAttribute(k,v){this.attributes[k]=v},
+ addEventListener(k,cb){this.listeners[k]=cb},
+ focus(){triggerFocuses++;document.activeElement=this}
+};
+const control={contains:el=>el===trigger||el===menu||options.includes(el)};
+const flag={textContent:"🇷🇺"};
+const title={textContent:""};
+const nativeSelect={value:"ru",listeners:{},addEventListener(k,cb){this.listeners[k]=cb}};
+const elements={
+ desktopLanguageControl:control,desktopLanguageButton:trigger,
+ desktopLanguageMenu:menu,desktopLanguageFlag:flag,
+ desktopLanguageTitle:title,languageSelect:nativeSelect
+};
+document={
+ activeElement:null,listeners:{},
+ getElementById:id=>elements[id],
+ addEventListener(k,cb){this.listeners[k]=cb}
+};
+const stored={};
+const context=vm.createContext({
+ document,language:"ru",translations:{ru:{},en:{},de:{},tr:{},hi:{}},
+ localStorage:{setItem:(k,v)=>stored[k]=v},
+});
+context.applyLanguage=()=>{
+ nativeSelect.value=vm.runInContext("language",context);
+ vm.runInContext("syncDesktopLanguage()",context);
+};
+vm.runInContext(source,context,{timeout:1000});
+vm.runInContext("syncDesktopLanguage()",context);
+assert.equal(flag.textContent,"🇷🇺");
+assert.equal(title.textContent,"Выберите язык");
+assert.equal(options.find(o=>o.dataset.langOption==="ru").attributes["aria-checked"],"true");
+trigger.listeners.click();
+assert.equal(menu.hidden,false,"picker should open");
+assert.equal(trigger.attributes["aria-expanded"],"true");
+options.find(o=>o.dataset.langOption==="de").listeners.click();
+assert.equal(vm.runInContext("language",context),"de");
+assert.equal(stored.bonusUpLanguage,"de");
+assert.equal(flag.textContent,"🇩🇪");
+assert.equal(title.textContent,"Sprache wählen");
+assert.equal(nativeSelect.value,"de");
+assert.equal(menu.hidden,true);
+assert.equal(trigger.attributes["aria-expanded"],"false");
+assert.equal(options.find(o=>o.dataset.langOption==="de").attributes["aria-checked"],"true");
+trigger.listeners.click();
+document.listeners.pointerdown({target:{}});
+assert(menu.hidden,"outside tap should close popup");
+trigger.listeners.click();
+document.listeners.keydown({key:"Escape"});
+assert(menu.hidden,"Escape should close popup");
+const beforeFocus=triggerFocuses;
+nativeSelect.listeners.change({target:{value:"en"}});
+assert.equal(vm.runInContext("language",context),"en");
+assert.equal(flag.textContent,"🇬🇧");
+assert.equal(triggerFocuses,beforeFocus,"mobile language selection must not focus hidden desktop button");
+"""
+        run = subprocess.run(
+            ["node", "-e", harness],
+            input=match.group(1), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+
     def test_html_inline_script_syntax(self):
         if not shutil.which("node"):
             self.skipTest("Node.js not installed")
