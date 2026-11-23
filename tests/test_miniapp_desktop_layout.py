@@ -4,6 +4,7 @@ Tests parse the actual HTML embedded in bot.py without starting Telegram,
 opening a database, or touching live user / affiliate data.
 """
 import ast
+import json
 from pathlib import Path
 import re
 import shutil
@@ -283,6 +284,58 @@ assert.equal(triggerFocuses,beforeFocus,"mobile language selection must not focu
             input=match.group(1), capture_output=True, text=True, check=False,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_all_interface_taglines_and_notice_are_localized(self):
+        html = self.html
+        for key in ("subtitle", "footerLine1", "footerLine2", "riskNote"):
+            self.assertIn(f'data-i18n="{key}"', html)
+        self.assertRegex(html, r'<text[^>]*data-i18n="subtitle"')
+        self.assertRegex(html, r'<text[^>]*data-i18n="footerLine1"')
+        self.assertRegex(html, r'<text[^>]*data-i18n="footerLine2"')
+        self.assertIn('el.setAttribute("href","/terms?lang="+language)', html)
+        self.assertIn('el.setAttribute("href","/privacy?lang="+language)', html)
+        match = re.search(r"const extraTranslations=(\{[^\n]+\});", html)
+        self.assertIsNotNone(match)
+        translated = json.loads(match.group(1))
+        self.assertEqual(set(translated), {"ru", "en", "de", "tr", "hi"})
+        for locale, entries in translated.items():
+            for key in ("footerLine1", "footerLine2", "riskNote"):
+                self.assertTrue(entries[key].strip(), (locale, key))
+            if locale != "ru":
+                self.assertNotEqual(entries["footerLine1"], translated["ru"]["footerLine1"])
+                self.assertNotEqual(entries["riskNote"], translated["ru"]["riskNote"])
+        # Static promo/banner artwork is not translated; only interface copy is.
+        self.assertIn('Object.assign(translations[code],extraTranslations[code])', html)
+
+    def test_terms_and_privacy_render_in_all_five_languages(self):
+        tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+        assignment = next(
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "LEGAL_PAGE_TRANSLATIONS"
+                    for t in node.targets)
+        )
+        pages = ast.literal_eval(assignment.value)
+        self.assertEqual(set(pages), {"terms", "privacy"})
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "legal_page_html"
+        )
+        module = ast.Module(body=[assignment, function], type_ignores=[])
+        namespace = {}
+        exec(compile(module, str(SOURCE), "exec"), namespace)
+        render = namespace["legal_page_html"]
+        for page in ("terms", "privacy"):
+            self.assertEqual(set(pages[page]), {"ru", "en", "de", "tr", "hi"})
+            for language, texts in pages[page].items():
+                self.assertEqual(len(texts), 4, (page, language))
+                rendered = render(page, language)
+                self.assertIn(f'<html lang=\'{language}\'>', rendered)
+                for text in texts:
+                    self.assertIn(text, rendered)
+                self.assertIn("← BONUS UP", rendered)
+                self.assertNotIn("<script src=", rendered)
+            self.assertEqual(render(page, "unknown"), render(page, "ru"))
 
     def test_html_inline_script_syntax(self):
         if not shutil.which("node"):
