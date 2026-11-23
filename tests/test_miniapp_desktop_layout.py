@@ -59,12 +59,68 @@ class MiniAppDesktopLayoutTests(unittest.TestCase):
         ):
             self.assertIn(required, html)
 
-    def test_fullscreen_only_by_user_action(self):
+    def test_desktop_auto_request_and_mobile_suppression(self):
         html = self.html
         self.assertIn('id="expandMiniApp"', html)
         self.assertIn('desktopExpand.addEventListener("click"', html)
-        self.assertIn("tg.requestFullscreen()", html)
-        self.assertNotIn("tg.ready();tg.requestFullscreen()", html)
+        self.assertIn('window.requestAnimationFrame(()=>requestDesktopFullscreen(false))', html)
+        self.assertIn('if(!tg)return false', html)
+        self.assertIn('platform==="tdesktop"||platform==="macos"', html)
+        self.assertIn('@media(max-width:899px) and (pointer:coarse)', html)
+        self.assertIn('tg.isFullscreen', html)
+
+        if not shutil.which("node"):
+            self.skipTest("Node.js not installed")
+        match = re.search(
+            r"<script>\s*(const tg=[\s\S]*?)const translations=",
+            html,
+        )
+        self.assertIsNotNone(match)
+        harness = r"""
+const assert = require("assert");
+const vm = require("vm");
+const source = require("fs").readFileSync(0,"utf8");
+const cases = [
+ {platform:"tdesktop",width:500,coarse:false,expected:1,visible:true},
+ {platform:"macos",width:650,coarse:false,expected:1,visible:true},
+ {platform:"web",width:1400,coarse:false,expected:1,visible:true},
+ {platform:"weba",width:390,coarse:true,expected:0,visible:false},
+ {platform:"webk",width:390,coarse:true,expected:0,visible:false},
+ {platform:"android",width:390,coarse:true,expected:0,visible:false},
+ {platform:"ios",width:390,coarse:true,expected:0,visible:false},
+ {platform:"web",width:450,coarse:false,expected:0,visible:false},
+];
+for (const c of cases){
+ let calls=0, ready=0, expand=0;
+ const callbacks={};
+ const button={hidden:true,addEventListener:(ev,cb)=>{callbacks[ev]=cb}};
+ const tg={
+  platform:c.platform,initData:"verified-launch",isFullscreen:false,
+  ready:()=>ready++,expand:()=>expand++,
+  isVersionAtLeast:v=>true,
+  requestFullscreen:()=>calls++,showAlert:()=>{}
+ };
+ const window={
+  Telegram:{WebApp:tg},
+  screen:{width:c.width},
+  innerWidth:c.width,
+  matchMedia:()=>({matches:c.coarse}),
+  requestAnimationFrame:cb=>cb()
+ };
+ const document={getElementById:()=>button};
+ vm.runInNewContext(source,{window,document}, {timeout:1000});
+ assert.equal(ready,1,c.platform+" ready");
+ assert.equal(expand,1,c.platform+" expand");
+ assert.equal(calls,c.expected,c.platform+" auto fullscreen");
+ assert.equal(button.hidden,!c.visible,c.platform+" fallback button");
+ if(c.visible){callbacks.click();assert.equal(calls,c.expected+1,c.platform+" manual fallback");}
+}
+"""
+        run = subprocess.run(
+            ["node", "-e", harness], input=match.group(1),
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_html_inline_script_syntax(self):
         if not shutil.which("node"):
