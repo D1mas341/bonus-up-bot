@@ -181,7 +181,14 @@ for (const c of cases){
         self.assertIn('desktop-language-popover[hidden]', html)
         for code in ("ru", "en", "de", "tr", "hi"):
             self.assertIn(f'data-lang-option="{code}"', html)
+            self.assertRegex(html, rf'data-lang-option="{code}"[^>]*><span[^>]*><svg ')
         self.assertIn('Sprache wählen', html)
+        self.assertIn('desktopLanguageFlag").innerHTML=desktopLanguageFlags[current]', html)
+        self.assertIn('desktop-language .lang-circle svg', html)
+        self.assertIn('<svg xmlns="http://www.w3.org/2000/svg"', html)
+        for color in ("#012169", "#0039A6", "#DD0000", "#E30A17", "#138808"):
+            self.assertIn(color, html)
+        self.assertNotIn('id="desktopLanguageFlag" aria-hidden="true">🇷🇺', html)
 
         if not shutil.which("node"):
             self.skipTest("Node.js not installed")
@@ -217,7 +224,7 @@ const trigger={
  focus(){triggerFocuses++;document.activeElement=this}
 };
 const control={contains:el=>el===trigger||el===menu||options.includes(el)};
-const flag={textContent:"🇷🇺"};
+const flag={innerHTML:""};
 const title={textContent:""};
 const nativeSelect={value:"ru",listeners:{},addEventListener(k,cb){this.listeners[k]=cb}};
 const elements={
@@ -241,7 +248,8 @@ context.applyLanguage=()=>{
 };
 vm.runInContext(source,context,{timeout:1000});
 vm.runInContext("syncDesktopLanguage()",context);
-assert.equal(flag.textContent,"🇷🇺");
+assert(flag.innerHTML.includes("<svg"),"Russian flag must be real SVG");
+assert(flag.innerHTML.includes("#D52B1E"),"Russian flag red stripe");
 assert.equal(title.textContent,"Выберите язык");
 assert.equal(options.find(o=>o.dataset.langOption==="ru").attributes["aria-checked"],"true");
 trigger.listeners.click();
@@ -250,7 +258,8 @@ assert.equal(trigger.attributes["aria-expanded"],"true");
 options.find(o=>o.dataset.langOption==="de").listeners.click();
 assert.equal(vm.runInContext("language",context),"de");
 assert.equal(stored.bonusUpLanguage,"de");
-assert.equal(flag.textContent,"🇩🇪");
+assert(flag.innerHTML.includes("#FFCE00"),"German flag gold stripe");
+assert(flag.innerHTML.includes("#DD0000"),"German flag red stripe");
 assert.equal(title.textContent,"Sprache wählen");
 assert.equal(nativeSelect.value,"de");
 assert.equal(menu.hidden,true);
@@ -265,7 +274,8 @@ assert(menu.hidden,"Escape should close popup");
 const beforeFocus=triggerFocuses;
 nativeSelect.listeners.change({target:{value:"en"}});
 assert.equal(vm.runInContext("language",context),"en");
-assert.equal(flag.textContent,"🇬🇧");
+assert(flag.innerHTML.includes("#012169"),"British flag blue field");
+assert(flag.innerHTML.includes("#C8102E"),"British flag red cross");
 assert.equal(triggerFocuses,beforeFocus,"mobile language selection must not focus hidden desktop button");
 """
         run = subprocess.run(
