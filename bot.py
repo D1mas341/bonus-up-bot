@@ -2749,6 +2749,21 @@ MINI_APP_HTML = '''<!doctype html>
 .desktop-expand{width:34px;height:34px;flex:none;border:1px solid #57451d;border-radius:10px;background:#17140d;color:#ffe58a;font:700 22px Arial;cursor:pointer}
 .desktop-expand[hidden]{display:none}
 .tg-desktop .menu-wrap{display:none!important}/* Native Telegram ⋮ already provides the desktop menu. */
+/* Language picker for Telegram Desktop — the native selector remains on mobile. */
+.desktop-language{display:none;position:relative;flex:none}
+.tg-desktop .desktop-language{display:block}
+.tg-desktop .lang-select{display:none}
+.desktop-language-trigger{display:flex;align-items:center;justify-content:center;width:43px;height:43px;border:1px solid #67706a;border-radius:50%;padding:3px;color:#fff;background:#202b2e;box-shadow:0 3px 12px #0009;cursor:pointer}
+.desktop-language-trigger .lang-circle{width:35px;height:35px;display:flex;align-items:center;justify-content:center;border-radius:50%;overflow:hidden;background:#394343;font-size:26px;line-height:1}
+.desktop-language-trigger:hover,.desktop-language-trigger[aria-expanded="true"]{border-color:#ffe58a;box-shadow:0 0 0 3px #ffd21a24,0 6px 18px #0008}
+.desktop-language-trigger:focus-visible,.desktop-language-item:focus-visible{outline:2px solid #ffe58a;outline-offset:3px}
+.desktop-language-popover{position:absolute;right:-10px;top:calc(100% + 14px);width:min(290px,calc(100vw - 24px));padding:14px;border-radius:18px;border:1px solid #647b7e;background:#344d51;box-shadow:0 16px 42px #000b,0 3px 10px #0007;backdrop-filter:blur(15px);z-index:80;display:grid;gap:3px}
+.desktop-language-popover[hidden]{display:none!important}
+.lang-popup-title{padding:8px 10px 12px;color:#f6f8f8;font-size:16px;font-weight:900;line-height:1.25}
+.desktop-language-item{width:100%;min-height:52px;display:flex;align-items:center;gap:15px;padding:8px 12px;border:0;border-radius:13px;background:transparent;color:#fff;text-align:left;font-family:inherit;font-size:16px;font-weight:750;cursor:pointer;transition:background .15s ease}
+.desktop-language-item:hover,.desktop-language-item[aria-checked="true"]{background:#6a898c86}
+.desktop-language-item .lang-option-flag{width:35px;height:35px;flex:none;display:flex;align-items:center;justify-content:center;border-radius:50%;overflow:hidden;background:#253639;font-size:26px;line-height:1}
+@media(max-width:899px) and (pointer:coarse){.desktop-language{display:none!important}.tg-desktop .lang-select{display:block}}
 @media(max-width:899px) and (pointer:coarse){.desktop-expand{display:none!important}}
 .desktop-expand:focus-visible{outline:2px solid #ffe58a;outline-offset:3px}
 .banner-tile{min-width:0;position:relative}
@@ -2781,7 +2796,7 @@ MINI_APP_HTML = '''<!doctype html>
 </style></head>
 <body>
 <div class="wrap">
- <div class="header"><div class="brand-head"><svg class="brand-head-art" viewBox="0 0 330 76" role="img" aria-label="BONUS UP"><defs><linearGradient id="headGold" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fffde8"/><stop offset=".28" stop-color="#ffe477"/><stop offset=".55" stop-color="#d99713"/><stop offset=".76" stop-color="#fff0a2"/><stop offset="1" stop-color="#9b5d00"/></linearGradient><linearGradient id="headWhite" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff"/><stop offset=".55" stop-color="#ffeeb3"/><stop offset="1" stop-color="#c48a16"/></linearGradient><filter id="headGlow" x="-.4" y="-.7" width="1.8" height="2.4"><feGaussianBlur stdDeviation="3"/></filter></defs><path d="M4 58 Q68 66 118 57 T225 54 Q270 53 319 25" fill="none" stroke="#f3b92d" stroke-width="8" opacity=".7" filter="url(#headGlow)"/><path d="M4 58 Q68 66 118 57 T225 54 Q270 53 319 25" fill="none" stroke="url(#headGold)" stroke-width="2.5"/><path d="M22 23 L15 5 L32 16 L44 1 L49 20 L65 11 L60 29 Z" fill="url(#headGold)" stroke="#8b5a08" stroke-width="1.2"/><text x="4" y="54" font-family="Arial Black,Arial,sans-serif" font-weight="1000" font-size="39" letter-spacing="-2.5" fill="url(#headGold)" stroke="#704405" stroke-width="1" paint-order="stroke">BONUS</text><text x="181" y="54" font-family="Arial Black,Arial,sans-serif" font-weight="1000" font-size="39" letter-spacing="-2" fill="url(#headGold)" stroke="#704405" stroke-width="1" paint-order="stroke">UP</text><path d="M204 39 L204 4 L194 16 M204 4 L214 16" fill="none" stroke="url(#headGold)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><text x="7" y="72" font-family="Arial,sans-serif" font-size="12" font-weight="800" fill="#ffe7a0">Бонусы и лучшие предложения</text><path d="M269 35 l3 -7 l3 7 l7 3 l-7 3 l-3 7 l-3 -7 l-7 -3z" fill="#fff0a1"/><path d="M291 19 l2 -5 l2 5 l5 2 l-5 2 l-2 5 l-2 -5 l-5 -2z" fill="#ffd85e"/></svg><div class="sub" data-i18n="subtitle">Лучшие бонусы и промокоды в одном месте!</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">🇷🇺 RU</option><option value="en">🇬🇧 EN</option><option value="de">🇩🇪 DE</option><option value="tr">🇹🇷 TR</option><option value="hi">🇮🇳 HI</option></select><button id="expandMiniApp" type="button" class="desktop-expand" hidden title="Развернуть окно Telegram" aria-label="Развернуть окно Telegram">⛶</button><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><button type="button" id="refreshPage" data-i18n="refreshPage">Обновить страницу</button><button type="button" id="createShortcut" data-i18n="createShortcut">Создать ярлык</button><a href="https://telegram.org/tos/mini-apps" data-i18n="terms">Условия использования</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
+ <div class="header"><div class="brand-head"><svg class="brand-head-art" viewBox="0 0 330 76" role="img" aria-label="BONUS UP"><defs><linearGradient id="headGold" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fffde8"/><stop offset=".28" stop-color="#ffe477"/><stop offset=".55" stop-color="#d99713"/><stop offset=".76" stop-color="#fff0a2"/><stop offset="1" stop-color="#9b5d00"/></linearGradient><linearGradient id="headWhite" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff"/><stop offset=".55" stop-color="#ffeeb3"/><stop offset="1" stop-color="#c48a16"/></linearGradient><filter id="headGlow" x="-.4" y="-.7" width="1.8" height="2.4"><feGaussianBlur stdDeviation="3"/></filter></defs><path d="M4 58 Q68 66 118 57 T225 54 Q270 53 319 25" fill="none" stroke="#f3b92d" stroke-width="8" opacity=".7" filter="url(#headGlow)"/><path d="M4 58 Q68 66 118 57 T225 54 Q270 53 319 25" fill="none" stroke="url(#headGold)" stroke-width="2.5"/><path d="M22 23 L15 5 L32 16 L44 1 L49 20 L65 11 L60 29 Z" fill="url(#headGold)" stroke="#8b5a08" stroke-width="1.2"/><text x="4" y="54" font-family="Arial Black,Arial,sans-serif" font-weight="1000" font-size="39" letter-spacing="-2.5" fill="url(#headGold)" stroke="#704405" stroke-width="1" paint-order="stroke">BONUS</text><text x="181" y="54" font-family="Arial Black,Arial,sans-serif" font-weight="1000" font-size="39" letter-spacing="-2" fill="url(#headGold)" stroke="#704405" stroke-width="1" paint-order="stroke">UP</text><path d="M204 39 L204 4 L194 16 M204 4 L214 16" fill="none" stroke="url(#headGold)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><text x="7" y="72" font-family="Arial,sans-serif" font-size="12" font-weight="800" fill="#ffe7a0">Бонусы и лучшие предложения</text><path d="M269 35 l3 -7 l3 7 l7 3 l-7 3 l-3 7 l-3 -7 l-7 -3z" fill="#fff0a1"/><path d="M291 19 l2 -5 l2 5 l5 2 l-5 2 l-2 5 l-2 -5 l-5 -2z" fill="#ffd85e"/></svg><div class="sub" data-i18n="subtitle">Лучшие бонусы и промокоды в одном месте!</div></div><div class="head-actions"><div class="profile" id="userProfile" aria-label="Профиль Telegram"><div class="avatar" id="userAvatar">?</div><div class="profile-name" id="userName"></div></div><select class="lang-select" id="languageSelect" aria-label="Язык"><option value="ru">🇷🇺 RU</option><option value="en">🇬🇧 EN</option><option value="de">🇩🇪 DE</option><option value="tr">🇹🇷 TR</option><option value="hi">🇮🇳 HI</option></select><div class="desktop-language" id="desktopLanguageControl"><button class="desktop-language-trigger" type="button" id="desktopLanguageButton" aria-label="Выбрать язык" aria-haspopup="menu" aria-expanded="false" aria-controls="desktopLanguageMenu"><span class="lang-circle" id="desktopLanguageFlag" aria-hidden="true">🇷🇺</span></button><div class="desktop-language-popover" id="desktopLanguageMenu" role="menu" aria-label="Выбор языка" hidden><div class="lang-popup-title" id="desktopLanguageTitle">Выберите язык</div><button class="desktop-language-item" type="button" role="menuitemradio" aria-checked="false" data-lang-option="en"><span class="lang-option-flag" aria-hidden="true">🇬🇧</span>English</button><button class="desktop-language-item" type="button" role="menuitemradio" aria-checked="false" data-lang-option="ru"><span class="lang-option-flag" aria-hidden="true">🇷🇺</span>Русский</button><button class="desktop-language-item" type="button" role="menuitemradio" aria-checked="false" data-lang-option="de"><span class="lang-option-flag" aria-hidden="true">🇩🇪</span>Deutsch</button><button class="desktop-language-item" type="button" role="menuitemradio" aria-checked="false" data-lang-option="tr"><span class="lang-option-flag" aria-hidden="true">🇹🇷</span>Türkçe</button><button class="desktop-language-item" type="button" role="menuitemradio" aria-checked="false" data-lang-option="hi"><span class="lang-option-flag" aria-hidden="true">🇮🇳</span>हिन्दी</button></div></div><button id="expandMiniApp" type="button" class="desktop-expand" hidden title="Развернуть окно Telegram" aria-label="Развернуть окно Telegram">⛶</button><div class="menu-wrap"><button class="menu-button" id="menuButton" aria-label="Меню" aria-expanded="false">⋮</button><div class="top-menu" id="topMenu"><button type="button" id="refreshPage" data-i18n="refreshPage">Обновить страницу</button><button type="button" id="createShortcut" data-i18n="createShortcut">Создать ярлык</button><a href="https://telegram.org/tos/mini-apps" data-i18n="terms">Условия использования</a></div></div><span style="font-size:12px;font-weight:900">18+</span></div></div>
  <div class="banner" id="promoBanner"><h1>🔥 Лучшие бонусы в одном месте</h1><p>Выбирай предложение, смотри бонус и переходи к оператору.</p></div>
  <div id="bannerDots" style="display:flex;justify-content:center;gap:6px;margin:-12px 0 18px"></div>
  <div class="tabs"><button class="tab active" data-cat="casino" data-i18n="games">🎰 ИГРЫ</button><button class="tab" data-cat="bets" data-i18n="sport">⚽ СПОРТ</button></div>
@@ -2872,12 +2887,67 @@ hi:{subtitle:"बोनस और बेहतरीन ऑफ़र",games:"�
 let language="ru";
 try{const saved=localStorage.getItem("bonusUpLanguage");if(saved&&translations[saved])language=saved;else{const code=((tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user&&tg.initDataUnsafe.user.language_code)||navigator.language||"ru").slice(0,2).toLowerCase();language=translations[code]?code:"ru"}}catch(e){}
 function t(key){return (translations[language]&&translations[language][key])||translations.ru[key]||key}
-function applyLanguage(){document.documentElement.lang=language;document.querySelectorAll("[data-i18n]").forEach(el=>{el.textContent=t(el.dataset.i18n)});document.getElementById("languageSelect").value=language;render(currentCat);if(selectedId!==null)openModal(selectedId)}
+function applyLanguage(){document.documentElement.lang=language;document.querySelectorAll("[data-i18n]").forEach(el=>{el.textContent=t(el.dataset.i18n)});document.getElementById("languageSelect").value=language;syncDesktopLanguage();render(currentCat);if(selectedId!==null)openModal(selectedId)}
 function setTelegramProfile(){const u=tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user;const avatar=document.getElementById("userAvatar"),name=document.getElementById("userName");if(!u){avatar.textContent="B";name.textContent="BONUS UP";return}const display=[u.first_name,u.last_name].filter(Boolean).join(" ")||(u.username?"@"+u.username:"BONUS UP");name.textContent=display;if(u.photo_url){const img=document.createElement("img");img.src=u.photo_url;img.alt="";img.onerror=()=>{avatar.textContent=(display.trim()[0]||"B").toUpperCase()};avatar.textContent="";avatar.appendChild(img)}else avatar.textContent=(display.trim()[0]||"B").toUpperCase()}
 let all=[];let currentCat="casino";let selectedId=null;
 setTelegramProfile();
 document.getElementById("languageSelect").value=language;
-document.getElementById("languageSelect").addEventListener("change",e=>{language=translations[e.target.value]?e.target.value:"ru";try{localStorage.setItem("bonusUpLanguage",language)}catch(err){}applyLanguage()});
+const desktopLanguageControl=document.getElementById("desktopLanguageControl");
+const desktopLanguageButton=document.getElementById("desktopLanguageButton");
+const desktopLanguageMenu=document.getElementById("desktopLanguageMenu");
+const desktopLanguageFlags={ru:"🇷🇺",en:"🇬🇧",de:"🇩🇪",tr:"🇹🇷",hi:"🇮🇳"};
+const desktopLanguageTitles={ru:"Выберите язык",en:"Choose language",de:"Sprache wählen",tr:"Dil seçin",hi:"भाषा चुनें"};
+function syncDesktopLanguage(){
+ const current=translations[language]?language:"ru";
+ document.getElementById("desktopLanguageFlag").textContent=desktopLanguageFlags[current];
+ document.getElementById("desktopLanguageTitle").textContent=desktopLanguageTitles[current];
+ desktopLanguageButton.setAttribute("aria-label",desktopLanguageTitles[current]);
+ desktopLanguageMenu.querySelectorAll("[data-lang-option]").forEach(item=>{
+  item.setAttribute("aria-checked",String(item.dataset.langOption===current));
+ });
+}
+function closeDesktopLanguageMenu(returnFocus=false){
+ desktopLanguageMenu.hidden=true;
+ desktopLanguageButton.setAttribute("aria-expanded","false");
+ if(returnFocus)desktopLanguageButton.focus();
+}
+function openDesktopLanguageMenu(){
+ desktopLanguageMenu.hidden=false;
+ desktopLanguageButton.setAttribute("aria-expanded","true");
+ const selected=desktopLanguageMenu.querySelector('[aria-checked="true"]');
+ if(selected)selected.focus();
+}
+function chooseLanguage(value){
+ language=translations[value]?value:"ru";
+ try{localStorage.setItem("bonusUpLanguage",language)}catch(err){}
+ applyLanguage();
+ closeDesktopLanguageMenu(true);
+}
+document.getElementById("languageSelect").addEventListener("change",e=>chooseLanguage(e.target.value));
+desktopLanguageButton.addEventListener("click",()=>{
+ if(desktopLanguageMenu.hidden)openDesktopLanguageMenu();
+ else closeDesktopLanguageMenu(false);
+});
+desktopLanguageMenu.querySelectorAll("[data-lang-option]").forEach(item=>{
+ item.addEventListener("click",()=>chooseLanguage(item.dataset.langOption));
+});
+desktopLanguageMenu.addEventListener("keydown",e=>{
+ if(e.key==="Escape"){e.preventDefault();closeDesktopLanguageMenu(true);return}
+ const options=[...desktopLanguageMenu.querySelectorAll("[data-lang-option]")];
+ let i=options.indexOf(document.activeElement);
+ if(e.key==="ArrowDown")i=(i+1)%options.length;
+ else if(e.key==="ArrowUp")i=(i-1+options.length)%options.length;
+ else if(e.key==="Home")i=0;
+ else if(e.key==="End")i=options.length-1;
+ else return;
+ e.preventDefault();options[i].focus();
+});
+document.addEventListener("pointerdown",e=>{
+ if(!desktopLanguageMenu.hidden&&!desktopLanguageControl.contains(e.target))closeDesktopLanguageMenu(false);
+});
+document.addEventListener("keydown",e=>{
+ if(e.key==="Escape"&&!desktopLanguageMenu.hidden)closeDesktopLanguageMenu(true);
+});
 const menuButton=document.getElementById("menuButton"),topMenu=document.getElementById("topMenu");
 menuButton.addEventListener("click",e=>{e.stopPropagation();const opened=topMenu.classList.toggle("open");menuButton.setAttribute("aria-expanded",String(opened))});
 document.getElementById("refreshPage").addEventListener("click",()=>window.location.reload());
